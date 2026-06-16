@@ -63,6 +63,26 @@ COLUNAS_MOEDA = [
     "nao_faturado_cmv",
 ]
 
+CAMPOS_LISTAGEM = [
+    "pedido",
+    "analista",
+    "departamento",
+    "fornecedor",
+    "dt_agendada",
+    "dt_agendada_ordem",
+    "qtd_itens",
+    "saldo_cmv",
+    "pre_nota_cmv",
+    "nao_faturado_cmv",
+    "status",
+    "cobrancas",
+    "ultima_cobranca",
+    "data_primeira_entrada",
+    "data_ultimo_upload",
+    "data_cancelamento",
+    "ativo",
+]
+
 # =========================
 # ESTILO
 # =========================
@@ -167,7 +187,6 @@ def converter_data(valor):
         try:
             if 30000 <= float(valor) <= 60000:
                 dt = pd.to_datetime(valor, unit="D", origin="1899-12-30", errors="coerce")
-
                 if not pd.isna(dt):
                     return dt.date()
         except Exception:
@@ -220,7 +239,6 @@ def formatar_moeda(valor):
             return valor
 
         v = float(valor)
-
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return str(valor or "R$ 0,00")
@@ -328,7 +346,6 @@ def menor_data(series):
 
     return min(datas)
 
-
 # =========================
 # FIREBASE
 # =========================
@@ -383,16 +400,26 @@ def salvar_em_lotes(operacoes):
         batch.commit(retry=retry_config(), timeout=90)
 
 
-def buscar_docs(ativos=None, tamanho_lote=300):
+def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=200):
     try:
         col = db.collection(COLLECTION)
-
         query_base = col
 
-        if ativos is True:
+        # Para evitar índice composto pesado:
+        # - se tiver analista, busca pelo analista e filtra ativo/status localmente.
+        # - se tiver status, busca pelo status e filtra ativo localmente.
+        # - se não tiver, busca por ativo.
+        if analista:
+            query_base = query_base.where("analista", "==", analista)
+        elif status:
+            query_base = query_base.where("status", "==", status)
+        elif ativos is True:
             query_base = query_base.where("ativo", "==", True)
         elif ativos is False:
             query_base = query_base.where("ativo", "==", False)
+
+        if campos:
+            query_base = query_base.select(campos)
 
         linhas = []
         ultimo_doc = None
@@ -416,6 +443,19 @@ def buscar_docs(ativos=None, tamanho_lote=300):
             for d in docs_lote:
                 item = d.to_dict()
                 item["doc_id"] = d.id
+
+                if ativos is True and item.get("ativo") is not True:
+                    continue
+
+                if ativos is False and item.get("ativo") is not False:
+                    continue
+
+                if analista and item.get("analista") != analista:
+                    continue
+
+                if status and item.get("status") != status:
+                    continue
+
                 linhas.append(item)
 
             ultimo_doc = docs_lote[-1]
@@ -425,21 +465,15 @@ def buscar_docs(ativos=None, tamanho_lote=300):
 
         return linhas
 
-    except (RetryError, DeadlineExceeded, ServiceUnavailable) as e:
-        st.error("Não consegui consultar o Firebase agora.")
-        st.info("Isso normalmente acontece por timeout, instabilidade ou configuração do Firestore.")
-        with st.expander("Ver detalhe técnico do erro"):
-            st.code(repr(e))
-        st.stop()
-
     except Exception as e:
-        st.error("Erro ao consultar o Firebase.")
+        st.error("Não consegui consultar o Firebase agora.")
+        st.info("Consulta reduzida, mas ainda houve timeout ou necessidade de índice/configuração no Firestore.")
         with st.expander("Ver detalhe técnico do erro"):
             st.code(repr(e))
         st.stop()
 
 
-def buscar_docs_por_ids(doc_ids, tamanho_lote=100):
+def buscar_docs_por_ids(doc_ids, tamanho_lote=100, campos=None):
     ids = list(dict.fromkeys(list(doc_ids)))
 
     if not ids:
@@ -450,7 +484,6 @@ def buscar_docs_por_ids(doc_ids, tamanho_lote=100):
     try:
         for i in range(0, len(ids), tamanho_lote):
             lote_ids = ids[i:i + tamanho_lote]
-
             refs = [
                 db.collection(COLLECTION).document(doc_id)
                 for doc_id in lote_ids
@@ -460,6 +493,7 @@ def buscar_docs_por_ids(doc_ids, tamanho_lote=100):
                 snaps = list(
                     db.get_all(
                         refs,
+                        field_paths=campos,
                         retry=retry_config(),
                         timeout=90
                     )
@@ -472,10 +506,13 @@ def buscar_docs_por_ids(doc_ids, tamanho_lote=100):
                         linhas.append(item)
 
             except Exception:
-                # Fallback: se o get_all falhar, busca documento por documento.
                 for ref in refs:
                     try:
-                        snap = ref.get(retry=retry_config(), timeout=30)
+                        snap = ref.get(
+                            field_paths=campos,
+                            retry=retry_config(),
+                            timeout=30
+                        )
 
                         if snap.exists:
                             item = snap.to_dict()
@@ -565,7 +602,6 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
         retry=retry_config(),
         timeout=90
     )
-
 
 # =========================
 # LEITURA DO ARQUIVO
@@ -794,10 +830,22 @@ def processar_carteira(df, usuario):
 
     ids_cobranca = {x["doc_id"] for x in linhas_cobranca}
 
-    existentes_lista = buscar_docs_por_ids(ids_cobranca)
+    existentes_lista = buscar_docs_por_ids(
+        ids_cobranca,
+        campos=[
+            "ativo",
+            "status",
+            "cobrancas",
+            "comprador_acionado",
+        ]
+    )
     existentes = {x["doc_id"]: x for x in existentes_lista}
 
-    ativos_anteriores = buscar_docs(ativos=True)
+    ativos_anteriores = buscar_docs(
+        ativos=True,
+        campos=["ativo"],
+        tamanho_lote=200
+    )
 
     data_proc = agora_str()
     operacoes = []
@@ -953,7 +1001,6 @@ def processar_carteira(df, usuario):
         "agrupado": agrupado,
     }
 
-
 # =========================
 # LOGIN
 # =========================
@@ -1008,7 +1055,6 @@ st.sidebar.write(f"Hoje: **{data_br(hoje())}**")
 st.sidebar.write(f"Cobrar até: **{data_br(data_limite_cobranca())}**")
 st.sidebar.write("Primeiro retira quem tem DT Agendamento.")
 st.sidebar.write("Depois cobra atraso pela menor Data Prev Entrega.")
-
 
 # =========================
 # TELAS
@@ -1289,11 +1335,14 @@ def tela_carteira(analista=None):
     st.info(f"Data limite da cobrança hoje: **{data_br(data_limite_cobranca())}**")
     st.caption("Aparecem aqui somente pedidos sem DT Agendamento e com Data Prev Entrega em atraso.")
 
-    itens = buscar_docs(ativos=True)
-    df = montar_df_itens(itens)
+    itens = buscar_docs(
+        ativos=True,
+        analista=analista,
+        campos=CAMPOS_LISTAGEM,
+        tamanho_lote=200
+    )
 
-    if analista:
-        df = df[df["analista"] == analista] if not df.empty else df
+    df = montar_df_itens(itens)
 
     metricas(df)
 
@@ -1399,19 +1448,28 @@ def tela_carteira(analista=None):
                     st.success("Comprador acionado registrado.")
                     st.rerun()
 
-            item_completo = buscar_doc(doc_id)
-            historico = item_completo.get("historico", []) if item_completo else []
+            if st.button("Carregar histórico", key=f"historico_{doc_id}"):
+                item_completo = buscar_doc(doc_id)
+                historico = item_completo.get("historico", []) if item_completo else []
 
-            if historico:
-                hist_df = pd.DataFrame(historico).sort_values("data", ascending=False)
-                st.caption("Histórico")
-                st.dataframe(hist_df, use_container_width=True, hide_index=True)
+                if historico:
+                    hist_df = pd.DataFrame(historico).sort_values("data", ascending=False)
+                    st.caption("Histórico")
+                    st.dataframe(hist_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Sem histórico para este pedido.")
 
 
 def tela_fora_atraso():
     st.header("📅 Fora do atraso")
 
-    itens = buscar_docs(ativos=False)
+    itens = buscar_docs(
+        ativos=False,
+        status=STATUS_FORA_ATRASO,
+        campos=CAMPOS_LISTAGEM,
+        tamanho_lote=200
+    )
+
     df = montar_df_itens(itens)
 
     if df.empty or "status" not in df.columns:
@@ -1438,7 +1496,13 @@ def tela_fora_atraso():
 def tela_cancelados():
     st.header("🚫 Retirados da conta")
 
-    itens = buscar_docs(ativos=False)
+    itens = buscar_docs(
+        ativos=False,
+        status=STATUS_CANCELADO,
+        campos=CAMPOS_LISTAGEM,
+        tamanho_lote=200
+    )
+
     df = montar_df_itens(itens)
 
     if df.empty or "status" not in df.columns:
