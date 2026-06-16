@@ -61,7 +61,6 @@ COLUNAS_MOEDA = [
     "saldo_cmv",
     "pre_nota_cmv",
     "nao_faturado_cmv",
-    "valor_total_cmv",
 ]
 
 # =========================
@@ -440,44 +439,56 @@ def buscar_docs(ativos=None, tamanho_lote=300):
         st.stop()
 
 
-def buscar_docs_por_ids(doc_ids, tamanho_lote=300):
+def buscar_docs_por_ids(doc_ids, tamanho_lote=100):
+    ids = list(dict.fromkeys(list(doc_ids)))
+
+    if not ids:
+        return []
+
+    linhas = []
+
     try:
-        ids = list(doc_ids)
-
-        if not ids:
-            return []
-
-        linhas = []
-
         for i in range(0, len(ids), tamanho_lote):
             lote_ids = ids[i:i + tamanho_lote]
+
             refs = [
                 db.collection(COLLECTION).document(doc_id)
                 for doc_id in lote_ids
             ]
 
-            snaps = db.get_all(
-                refs,
-                retry=retry_config(),
-                timeout=90
-            )
+            try:
+                snaps = list(
+                    db.get_all(
+                        refs,
+                        retry=retry_config(),
+                        timeout=90
+                    )
+                )
 
-            for snap in snaps:
-                if snap.exists:
-                    item = snap.to_dict()
-                    item["doc_id"] = snap.id
-                    linhas.append(item)
+                for snap in snaps:
+                    if snap.exists:
+                        item = snap.to_dict()
+                        item["doc_id"] = snap.id
+                        linhas.append(item)
+
+            except Exception:
+                # Fallback: se o get_all falhar, busca documento por documento.
+                for ref in refs:
+                    try:
+                        snap = ref.get(retry=retry_config(), timeout=30)
+
+                        if snap.exists:
+                            item = snap.to_dict()
+                            item["doc_id"] = snap.id
+                            linhas.append(item)
+
+                    except Exception:
+                        continue
 
         return linhas
 
-    except (RetryError, DeadlineExceeded, ServiceUnavailable) as e:
-        st.error("Não consegui buscar os pedidos no Firebase agora.")
-        with st.expander("Ver detalhe técnico do erro"):
-            st.code(repr(e))
-        st.stop()
-
     except Exception as e:
-        st.error("Erro ao buscar pedidos no Firebase.")
+        st.error("Não consegui buscar os pedidos no Firebase agora.")
         with st.expander("Ver detalhe técnico do erro"):
             st.code(repr(e))
         st.stop()
@@ -595,81 +606,41 @@ def encontrar_coluna_fixa(df, nomes_possiveis):
 def mapear_colunas_fixas(df):
     colunas = {
         "pedido": encontrar_coluna_fixa(df, [
-            "Pedido",
-            "N Pedido",
-            "Nº Pedido",
-            "Num Pedido",
-            "Número Pedido",
-            "Numero Pedido",
-            "OC",
-            "Ordem"
+            "Pedido", "N Pedido", "Nº Pedido", "Num Pedido",
+            "Número Pedido", "Numero Pedido", "OC", "Ordem"
         ]),
         "departamento": encontrar_coluna_fixa(df, [
-            "Departamento",
-            "Depto",
-            "Setor"
+            "Departamento", "Depto", "Setor"
         ]),
         "fornecedor": encontrar_coluna_fixa(df, [
-            "Fornecedor",
-            "Forneceor",
-            "Razão Social",
-            "Razao Social",
-            "Vendor"
+            "Fornecedor", "Forneceor", "Razão Social", "Razao Social", "Vendor"
         ]),
         "data_prev_entrega": encontrar_coluna_fixa(df, [
-            "Data Prev Entrega",
-            "Data Prev. Entrega",
-            "Dt Prev Entrega",
-            "DT Prev Entrega",
-            "Prev Entrega",
-            "Previsão Entrega",
-            "Previsao Entrega",
-            "Data Prevista Entrega",
-            "Menor Data Prev Entrega"
+            "Data Prev Entrega", "Data Prev. Entrega", "Dt Prev Entrega",
+            "DT Prev Entrega", "Prev Entrega", "Previsão Entrega",
+            "Previsao Entrega", "Data Prevista Entrega", "Menor Data Prev Entrega"
         ]),
         "dt_agendamento": encontrar_coluna_fixa(df, [
-            "DT Agendamento",
-            "Dt Agendamento",
-            "Data Agendamento",
-            "Data Agendada",
-            "DT Agendada",
-            "Dt Agendada",
-            "DT Agendando",
-            "Dt Agendando",
-            "Data Agendando",
-            "Agendamento",
-            "Agendada",
-            "Agendando"
+            "DT Agendamento", "Dt Agendamento", "Data Agendamento",
+            "Data Agendada", "DT Agendada", "Dt Agendada",
+            "DT Agendando", "Dt Agendando", "Data Agendando",
+            "Agendamento", "Agendada", "Agendando"
         ]),
         "saldo_cmv": encontrar_coluna_fixa(df, [
-            "Saldo R$ (CMV)",
-            "Saldo R CMV",
-            "Saldo CMV"
+            "Saldo R$ (CMV)", "Saldo R CMV", "Saldo CMV"
         ]),
         "pre_nota_cmv": encontrar_coluna_fixa(df, [
-            "Pré-nota R$ (CMV)",
-            "Pre-nota R$ (CMV)",
-            "Pré Nota R$ (CMV)",
-            "Pre Nota R$ (CMV)",
-            "Pré-Nota R$ (CMV)",
-            "Pre-Nota R$ (CMV)",
-            "Pré-nota CMV",
-            "Pre-nota CMV",
-            "Pré Nota CMV",
-            "Pre Nota CMV",
-            "Pré-Nota CMV",
-            "Pre-Nota CMV",
-            "Prenota CMV"
+            "Pré-nota R$ (CMV)", "Pre-nota R$ (CMV)",
+            "Pré Nota R$ (CMV)", "Pre Nota R$ (CMV)",
+            "Pré-Nota R$ (CMV)", "Pre-Nota R$ (CMV)",
+            "Pré-nota CMV", "Pre-nota CMV", "Pré Nota CMV",
+            "Pre Nota CMV", "Pré-Nota CMV", "Pre-Nota CMV", "Prenota CMV"
         ]),
         "nao_faturado_cmv": encontrar_coluna_fixa(df, [
-            "Não Faturado R$ (CMV)",
-            "Nao Faturado R$ (CMV)",
-            "Não Faturado CMV",
-            "Nao Faturado CMV",
-            "Não Fatuado CMV",
-            "Nao Fatuado CMV",
-            "Nao Fat CMV",
-            "Não Fat CMV"
+            "Não Faturado R$ (CMV)", "Nao Faturado R$ (CMV)",
+            "Não Faturado CMV", "Nao Faturado CMV",
+            "Não Fatuado CMV", "Nao Fatuado CMV",
+            "Nao Fat CMV", "Não Fat CMV"
         ]),
     }
 
@@ -705,8 +676,6 @@ def agregar_por_pedido(df, colunas):
 
     total_itens_antes = len(base)
 
-    # REGRA PRINCIPAL:
-    # Tudo que já tem DT Agendamento preenchida sai da cobrança.
     base_sem_agendamento = base[
         base["_dt_agendamento"].isna()
     ].copy()
@@ -721,8 +690,7 @@ def agregar_por_pedido(df, colunas):
     if base_sem_agendamento.empty:
         agrupado = pd.DataFrame(columns=[
             "_pedido", "departamento", "fornecedor", "menor_data_prev_entrega",
-            "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
-            "qtd_itens", "valor_total_cmv"
+            "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "qtd_itens"
         ])
 
         agrupado.attrs["retirados_agendamento"] = retirados_agendamento
@@ -743,11 +711,6 @@ def agregar_por_pedido(df, colunas):
         nao_faturado_cmv=("_nao_faturado_cmv", "sum"),
         qtd_itens=("_pedido", "size")
     ).reset_index()
-
-    # CORREÇÃO:
-    # O Saldo CMV já representa Pré-nota CMV + Não Faturado CMV.
-    # Portanto o valor total da carteira deve ser o próprio Saldo CMV.
-    agrupado["valor_total_cmv"] = agrupado["saldo_cmv"]
 
     agrupado.attrs["retirados_agendamento"] = retirados_agendamento
     agrupado.attrs["ids_arquivo_completo"] = ids_arquivo_completo
@@ -799,7 +762,6 @@ def preparar_linhas(df):
             "saldo_cmv": float(row["saldo_cmv"] or 0),
             "pre_nota_cmv": float(row["pre_nota_cmv"] or 0),
             "nao_faturado_cmv": float(row["nao_faturado_cmv"] or 0),
-            "valor_total_cmv": float(row["valor_total_cmv"] or 0),
             "qtd_itens": int(row["qtd_itens"] or 0),
         }
 
@@ -1068,7 +1030,7 @@ def montar_df_itens(itens):
     cols = [
         "pedido", "analista", "departamento", "fornecedor",
         "dt_agendada", "qtd_itens",
-        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "valor_total_cmv",
+        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
         "status", "cobrancas", "ultima_cobranca",
         "data_primeira_entrada", "data_ultimo_upload", "data_cancelamento", "doc_id"
     ]
@@ -1140,16 +1102,16 @@ def metricas(df):
     if df.empty:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Ativos em atraso", 0)
-        c2.metric("Valor total CMV", "R$ 0,00")
+        c2.metric("Saldo CMV", "R$ 0,00")
         c3.metric("Cobrado 2x", 0)
         c4.metric("Acionar comprador", 0)
         return
 
-    total = df["valor_total_cmv"].sum() if "valor_total_cmv" in df.columns else 0
+    total = df["saldo_cmv"].sum() if "saldo_cmv" in df.columns else 0
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ativos em atraso", len(df))
-    c2.metric("Valor total CMV", formatar_moeda(total))
+    c2.metric("Saldo CMV", formatar_moeda(total))
     c3.metric("Cobrado 2x", int((df["status"] == STATUS_COBRADO_2).sum()))
     c4.metric("Acionar comprador", int((df["status"] == STATUS_ACIONAR_COMPRADOR).sum()))
 
@@ -1199,25 +1161,24 @@ def configurar_colunas_e_processar(df, origem_texto):
     total_saldo = sum(x["saldo_cmv"] for x in linhas_cobranca)
     total_pre_nota = sum(x["pre_nota_cmv"] for x in linhas_cobranca)
     total_nao_faturado = sum(x["nao_faturado_cmv"] for x in linhas_cobranca)
-    total_geral = sum(x["valor_total_cmv"] for x in linhas_cobranca)
 
     retirados_agendamento = agrupado.attrs.get("retirados_agendamento", 0)
     ids_arquivo_completo = agrupado.attrs.get("ids_arquivo_completo", set())
     ids_sem_agendamento = agrupado.attrs.get("ids_sem_agendamento", set())
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Pedidos no arquivo", len(ids_arquivo_completo))
     c2.metric("Pedidos sem agendamento", len(ids_sem_agendamento))
     c3.metric("Entram na cobrança", len(linhas_cobranca))
-    c4.metric("Valor total CMV", formatar_moeda(total_geral))
 
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Itens retirados por DT Agendamento", retirados_agendamento)
-    c6.metric("Fora por data", len(linhas_todas) - len(linhas_cobranca))
-    c7.metric("Saldo CMV", formatar_moeda(total_saldo))
-    c8.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Itens retirados por DT Agendamento", retirados_agendamento)
+    c5.metric("Fora por data", len(linhas_todas) - len(linhas_cobranca))
+    c6.metric("Saldo CMV", formatar_moeda(total_saldo))
 
-    st.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
+    c7, c8 = st.columns(2)
+    c7.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
+    c8.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
 
     if not preview_cobranca.empty:
         st.subheader("Separação dos atrasados por analista")
@@ -1229,8 +1190,7 @@ def configurar_colunas_e_processar(df, origem_texto):
             pedidos=("pedido", "count"),
             saldo_cmv=("saldo_cmv", "sum"),
             pre_nota_cmv=("pre_nota_cmv", "sum"),
-            nao_faturado_cmv=("nao_faturado_cmv", "sum"),
-            valor_total_cmv=("valor_total_cmv", "sum")
+            nao_faturado_cmv=("nao_faturado_cmv", "sum")
         ).reset_index()
 
         st.dataframe(formatar_df_moeda(resumo), use_container_width=True, hide_index=True)
@@ -1243,7 +1203,7 @@ def configurar_colunas_e_processar(df, origem_texto):
                 formatar_df_moeda(
                     sem_analista[[
                         "pedido", "departamento", "dt_agendada", "fornecedor",
-                        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "valor_total_cmv"
+                        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv"
                     ]].head(50)
                 ),
                 use_container_width=True,
@@ -1283,20 +1243,22 @@ def configurar_colunas_e_processar(df, origem_texto):
 
         st.success("Carteira processada com sucesso!")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Pedidos no arquivo", resultado["total_arquivo"])
         c2.metric("Pedidos sem agendamento", resultado["sem_agendamento"])
         c3.metric("Entraram na cobrança", resultado["em_atraso"])
-        c4.metric("Retirados da conta", resultado["cancelados"])
 
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Itens retirados por DT Agendamento", resultado["retirados_agendamento"])
-        c6.metric("Fora por data", resultado["retirados_por_data"])
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Itens retirados por DT Agendamento", resultado["retirados_agendamento"])
+        c5.metric("Fora por data", resultado["retirados_por_data"])
+        c6.metric("Retirados da conta", resultado["cancelados"])
+
+        c7, c8, c9 = st.columns(3)
         c7.metric("Com agendamento", resultado["com_agendamento"])
         c8.metric("Fora do atraso", resultado["fora_atraso"])
-
-        c9, c10, c11 = st.columns(3)
         c9.metric("Novos", resultado["novos"])
+
+        c10, c11 = st.columns(2)
         c10.metric("Mantidos", resultado["mantidos"])
         c11.metric("Reativados", resultado["reativados"])
 
@@ -1393,7 +1355,6 @@ def tela_carteira(analista=None):
                     <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
                     <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
                     <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
-                    <b>Valor Total CMV:</b> {formatar_moeda(linha.get('valor_total_cmv', 0))}<br>
                     <b>Cobranças:</b> {cobrancas}<br>
                     <b>Última cobrança:</b> {linha.get('ultima_cobranca', '') or '-'}
                 </div>
@@ -1513,8 +1474,7 @@ def tela_regras():
     st.write("6. Não existe regra de marcar como entregue.")
 
     st.subheader("Valores considerados")
-    st.write("Valor Total CMV = Saldo R$ (CMV).")
-    st.write("O Saldo CMV já representa a soma de Pré-nota CMV + Não Faturado CMV.")
+    st.write("Saldo CMV = Pré-nota CMV + Não Faturado CMV.")
     st.write("Os valores são considerados apenas dos produtos que ficaram sem DT Agendamento.")
 
     st.subheader("Analistas")
