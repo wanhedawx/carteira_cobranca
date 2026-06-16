@@ -490,10 +490,10 @@ def mapear_colunas_fixas(df):
             "Saldo R CMV"
         ]),
         "pre_nota_cmv": encontrar_coluna_fixa(df, [
-            "Pré Nota R$ (CMV)",
-            "Pre Nota R$ (CMV)",
-            "Pré Nota CMV",
-            "Pre Nota CMV",
+            "Pré-Nota R$ (CMV)",
+            "Pre-Nota R$ (CMV)",
+            "Pré-Nota CMV",
+            "Pre-Nota CMV",
             "Prenota CMV",
             "Pré-Nota CMV",
             "Pre-Nota CMV"
