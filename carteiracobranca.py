@@ -698,7 +698,10 @@ def agregar_por_pedido(df, colunas):
         (base["_pedido"].astype(str).str.lower() != "nan")
     ].copy()
 
-    ids_arquivo_completo = set(hash_id(p) for p in base["_pedido"].astype(str).str.strip().unique())
+    ids_arquivo_completo = set(
+        hash_id(p)
+        for p in base["_pedido"].astype(str).str.strip().unique()
+    )
 
     total_itens_antes = len(base)
 
@@ -741,11 +744,10 @@ def agregar_por_pedido(df, colunas):
         qtd_itens=("_pedido", "size")
     ).reset_index()
 
-    agrupado["valor_total_cmv"] = (
-        agrupado["saldo_cmv"] +
-        agrupado["pre_nota_cmv"] +
-        agrupado["nao_faturado_cmv"]
-    )
+    # CORREÇÃO:
+    # O Saldo CMV já representa Pré-nota CMV + Não Faturado CMV.
+    # Portanto o valor total da carteira deve ser o próprio Saldo CMV.
+    agrupado["valor_total_cmv"] = agrupado["saldo_cmv"]
 
     agrupado.attrs["retirados_agendamento"] = retirados_agendamento
     agrupado.attrs["ids_arquivo_completo"] = ids_arquivo_completo
@@ -1511,8 +1513,9 @@ def tela_regras():
     st.write("6. Não existe regra de marcar como entregue.")
 
     st.subheader("Valores considerados")
-    st.write("Valor Total CMV = Saldo R$ (CMV) + Pré-nota R$ (CMV) + Não Faturado R$ (CMV).")
-    st.write("Os valores são somados apenas dos produtos que ficaram sem DT Agendamento.")
+    st.write("Valor Total CMV = Saldo R$ (CMV).")
+    st.write("O Saldo CMV já representa a soma de Pré-nota CMV + Não Faturado CMV.")
+    st.write("Os valores são considerados apenas dos produtos que ficaram sem DT Agendamento.")
 
     st.subheader("Analistas")
 
