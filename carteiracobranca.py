@@ -21,6 +21,8 @@ st.set_page_config(
 
 TZ = ZoneInfo("America/Maceio")
 COLLECTION = "carteira_cobranca"
+COLLECTION_CACHE = "carteira_cobranca_cache"
+CACHE_CHUNK_SIZE = 100
 
 ANALISTAS = {
     "Cleviton": [
@@ -180,6 +182,12 @@ def chave_analista_ativo(analista, ativo=True):
 
 def chave_status_ativo(status, ativo=True):
     return f"{norm(status)}|{'1' if ativo else '0'}"
+
+
+def cache_key(nome):
+    nome = nome or "GERAL"
+    chave = norm(nome).replace(" ", "_")
+    return chave or "GERAL"
 
 
 def converter_data(valor):
@@ -414,7 +422,6 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
         col = db.collection(COLLECTION)
         query_base = col
 
-        # Consulta rápida para carteira do analista
         if analista and ativos is True:
             query_base = query_base.where(
                 "analista_ativo_key",
@@ -422,7 +429,6 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
                 chave_analista_ativo(analista, True)
             )
 
-        # Consulta rápida para fora do atraso / retirados
         elif status and ativos is False:
             query_base = query_base.where(
                 "status_ativo_key",
@@ -445,7 +451,6 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
         if campos:
             query_base = query_base.select(campos)
 
-        # Sem order_by e sem paginação para evitar timeout no Streamlit Cloud
         docs = list(
             query_base.limit(tamanho_lote).stream(
                 retry=retry_config(),
@@ -477,7 +482,7 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
 
     except Exception as e:
         st.error("Não consegui consultar o Firebase agora.")
-        st.info("Se você acabou de subir a versão nova, entre como Admin, envie a carteira e clique em Processar carteira para criar as chaves dos analistas.")
+        st.info("A consulta principal deu timeout. As telas dos analistas usam cache após o Admin processar a carteira.")
         with st.expander("Ver detalhe técnico do erro"):
             st.code(repr(e))
         st.stop()
@@ -561,6 +566,176 @@ def buscar_doc(doc_id):
         st.stop()
 
 
+# =========================
+# CACHE LEVE DOS ANALISTAS
+# =========================
+def salvar_cache_ativo(linhas_ativas):
+    grupos = {"GERAL": list(linhas_ativas)}
+
+    for analista in ANALISTAS.keys():
+        grupos[analista] = []
+
+    grupos["SEM ANALISTA"] = []
+
+    for item in linhas_ativas:
+        analista = item.get("analista", "SEM ANALISTA") or "SEM ANALISTA"
+        grupos.setdefault(analista, [])
+        grupos[analista].append(item)
+
+    operacoes = []
+    data_proc = agora_str()
+
+    for nome_grupo, itens in grupos.items():
+        chave = cache_key(nome_grupo)
+        chunks = [
+            itens[i:i + CACHE_CHUNK_SIZE]
+            for i in range(0, len(itens), CACHE_CHUNK_SIZE)
+        ]
+
+        meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
+
+        operacoes.append((
+            "set",
+            meta_ref,
+            {
+                "tipo": "ativos",
+                "grupo": nome_grupo,
+                "total": len(itens),
+                "chunks": len(chunks),
+                "atualizado_em": data_proc,
+            },
+            False
+        ))
+
+        for idx, chunk in enumerate(chunks):
+            chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
+
+            operacoes.append((
+                "set",
+                chunk_ref,
+                {
+                    "tipo": "ativos_chunk",
+                    "grupo": nome_grupo,
+                    "chunk": idx,
+                    "itens": chunk,
+                    "atualizado_em": data_proc,
+                },
+                False
+            ))
+
+    salvar_em_lotes(operacoes)
+
+
+def carregar_cache_ativo(analista=None):
+    nome_grupo = analista or "GERAL"
+    chave = cache_key(nome_grupo)
+
+    try:
+        meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
+        meta = meta_ref.get(timeout=20)
+
+        if not meta.exists:
+            return []
+
+        meta_dados = meta.to_dict()
+        total_chunks = int(meta_dados.get("chunks", 0) or 0)
+
+        itens = []
+
+        for idx in range(total_chunks):
+            chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
+            chunk_snap = chunk_ref.get(timeout=20)
+
+            if chunk_snap.exists:
+                chunk_dados = chunk_snap.to_dict()
+                itens.extend(chunk_dados.get("itens", []))
+
+        return itens
+
+    except Exception as e:
+        st.error("Não consegui carregar a carteira em cache.")
+        st.info("Entre como Admin, envie a carteira e clique em Processar carteira novamente para recriar o cache dos analistas.")
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
+        st.stop()
+
+
+def carregar_ativos_anteriores_do_cache():
+    itens = carregar_cache_ativo(None)
+
+    ativos = []
+
+    for item in itens:
+        doc_id = item.get("doc_id")
+
+        if doc_id:
+            ativos.append({
+                "doc_id": doc_id,
+                "ativo": True,
+                "analista": item.get("analista", ""),
+            })
+
+    return ativos
+
+
+def atualizar_item_no_cache(doc_id, atualizacoes):
+    try:
+        item_base = buscar_doc(doc_id)
+
+        if not item_base:
+            return
+
+        analista = item_base.get("analista", "")
+
+        for nome_grupo in ["GERAL", analista]:
+            if not nome_grupo:
+                continue
+
+            chave = cache_key(nome_grupo)
+
+            meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
+            meta = meta_ref.get(timeout=20)
+
+            if not meta.exists:
+                continue
+
+            meta_dados = meta.to_dict()
+            total_chunks = int(meta_dados.get("chunks", 0) or 0)
+
+            for idx in range(total_chunks):
+                chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
+                chunk_snap = chunk_ref.get(timeout=20)
+
+                if not chunk_snap.exists:
+                    continue
+
+                chunk_dados = chunk_snap.to_dict()
+                itens = chunk_dados.get("itens", [])
+
+                alterou = False
+
+                for item in itens:
+                    if item.get("doc_id") == doc_id:
+                        item.update(atualizacoes)
+                        alterou = True
+
+                if alterou:
+                    chunk_ref.set(
+                        {
+                            **chunk_dados,
+                            "itens": itens,
+                            "atualizado_em": agora_str(),
+                        },
+                        merge=False
+                    )
+
+    except Exception:
+        pass
+
+
+# =========================
+# AÇÕES
+# =========================
 def registrar_cobranca(doc_id, usuario, observacao):
     item = buscar_doc(doc_id)
 
@@ -572,10 +747,11 @@ def registrar_cobranca(doc_id, usuario, observacao):
     nova_qtd = atual + 1
     comprador_acionado = bool(item.get("comprador_acionado", False))
     novo_status = status_por_cobranca(nova_qtd, comprador_acionado)
+    data_evento = agora_str()
 
     evento = {
         "tipo": "COBRANCA",
-        "data": agora_str(),
+        "data": data_evento,
         "usuario": usuario,
         "observacao": observacao or "",
         "cobranca_numero": nova_qtd,
@@ -588,7 +764,7 @@ def registrar_cobranca(doc_id, usuario, observacao):
         {
             "cobrancas": nova_qtd,
             "status": novo_status,
-            "ultima_cobranca": agora_str(),
+            "ultima_cobranca": data_evento,
             "status_ativo_key": chave_status_ativo(novo_status, True),
             "analista_ativo_key": chave_analista_ativo(analista, True),
             "historico": ArrayUnion([evento])
@@ -597,14 +773,21 @@ def registrar_cobranca(doc_id, usuario, observacao):
         timeout=60
     )
 
+    atualizar_item_no_cache(doc_id, {
+        "cobrancas": nova_qtd,
+        "status": novo_status,
+        "ultima_cobranca": data_evento,
+    })
+
 
 def marcar_comprador_acionado(doc_id, usuario, observacao):
     item = buscar_doc(doc_id)
     analista = item.get("analista", "") if item else ""
+    data_evento = agora_str()
 
     evento = {
         "tipo": "COMPRADOR_ACIONADO",
-        "data": agora_str(),
+        "data": data_evento,
         "usuario": usuario,
         "observacao": observacao or "",
     }
@@ -613,7 +796,7 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
         {
             "comprador_acionado": True,
             "status": STATUS_COMPRADOR_ACIONADO,
-            "data_comprador_acionado": agora_str(),
+            "data_comprador_acionado": data_evento,
             "status_ativo_key": chave_status_ativo(STATUS_COMPRADOR_ACIONADO, True),
             "analista_ativo_key": chave_analista_ativo(analista, True),
             "historico": ArrayUnion([evento])
@@ -621,6 +804,12 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
         retry=retry_config(),
         timeout=60
     )
+
+    atualizar_item_no_cache(doc_id, {
+        "comprador_acionado": True,
+        "status": STATUS_COMPRADOR_ACIONADO,
+    })
+
 
 # =========================
 # LEITURA DO ARQUIVO
@@ -861,14 +1050,11 @@ def processar_carteira(df, usuario):
     )
     existentes = {x["doc_id"]: x for x in existentes_lista}
 
-    ativos_anteriores = buscar_docs(
-        ativos=True,
-        campos=["ativo", "analista"],
-        tamanho_lote=1000
-    )
+    ativos_anteriores = carregar_ativos_anteriores_do_cache()
 
     data_proc = agora_str()
     operacoes = []
+    cache_linhas_ativas = []
 
     novos = 0
     reativados = 0
@@ -908,6 +1094,15 @@ def processar_carteira(df, usuario):
 
             operacoes.append(("set", ref, dados, True))
 
+            cache_linhas_ativas.append({
+                **item,
+                "ativo": True,
+                "status": status,
+                "cobrancas": qtd,
+                "comprador_acionado": comprador_acionado,
+                "data_ultimo_upload": data_proc,
+            })
+
         else:
             novos += 1
 
@@ -934,6 +1129,18 @@ def processar_carteira(df, usuario):
             }
 
             operacoes.append(("set", ref, dados, True))
+
+            cache_linhas_ativas.append({
+                **item,
+                "ativo": True,
+                "status": STATUS_PENDENTE,
+                "cobrancas": 0,
+                "comprador_acionado": False,
+                "data_primeira_entrada": data_proc,
+                "data_ultimo_upload": data_proc,
+                "ultima_cobranca": "",
+                "data_cancelamento": "",
+            })
 
     cancelados = 0
     fora_atraso = 0
@@ -1014,6 +1221,8 @@ def processar_carteira(df, usuario):
 
     salvar_em_lotes(operacoes)
 
+    salvar_cache_ativo(cache_linhas_ativas)
+
     return {
         "erro": False,
         "total_arquivo": len(ids_arquivo_completo),
@@ -1031,6 +1240,7 @@ def processar_carteira(df, usuario):
         "colunas": colunas,
         "agrupado": agrupado,
     }
+
 
 # =========================
 # LOGIN
@@ -1318,7 +1528,7 @@ def configurar_colunas_e_processar(df, origem_texto):
                 st.write(a)
             st.stop()
 
-        st.success("Carteira processada com sucesso!")
+        st.success("Carteira processada com sucesso! Cache dos analistas atualizado.")
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Pedidos no arquivo", resultado["total_arquivo"])
@@ -1366,12 +1576,7 @@ def tela_carteira(analista=None):
     st.info(f"Data limite da cobrança hoje: **{data_br(data_limite_cobranca())}**")
     st.caption("Aparecem aqui somente pedidos sem DT Agendamento e com Data Prev Entrega em atraso.")
 
-    itens = buscar_docs(
-        ativos=True,
-        analista=analista,
-        campos=CAMPOS_LISTAGEM,
-        tamanho_lote=1000
-    )
+    itens = carregar_cache_ativo(analista)
 
     df = montar_df_itens(itens)
 
