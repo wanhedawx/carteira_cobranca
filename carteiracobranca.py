@@ -64,6 +64,12 @@ COLUNAS_MOEDA = [
     "saldo_cmv_pedido",
     "pre_nota_cmv_pedido",
     "nao_faturado_cmv_pedido",
+    "Saldo R$ Item",
+    "Pré-nota R$ Item",
+    "Não Faturado R$ Item",
+    "Saldo R$ Pedido",
+    "Pré-nota R$ Pedido",
+    "Não Faturado R$ Pedido",
 ]
 
 CAMPOS_PEDIDOS = [
@@ -2005,18 +2011,17 @@ def montar_exportacao_acionar_comprador():
                 "data_prev_entrega": pedido.get("dt_agendada", ""),
                 "status": pedido.get("status", ""),
                 "cobrancas": pedido.get("cobrancas", 0),
-                "codigo": "",
-                "descricao": "",
-                "qtd": pedido.get("qtd_itens", 0),
-                "saldo_qtd_item": pedido.get("qtd_itens", 0),
-                "nao_faturado_qtd_item": "",
-                "pre_nota_qtd_item": "",
-                "saldo_cmv_item": pedido.get("saldo_cmv", 0),
-                "pre_nota_cmv_item": pedido.get("pre_nota_cmv", 0),
-                "nao_faturado_cmv_item": pedido.get("nao_faturado_cmv", 0),
-                "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
-                "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
-                "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
+                "Cod_Prod": "",
+                "Desc_Prod": "",
+                "Saldo QTD": "",
+                "Não Faturado QTD": "",
+                "Pré-nota QTD": "",
+                "Saldo R$ Item": pedido.get("saldo_cmv", 0),
+                "Pré-nota R$ Item": pedido.get("pre_nota_cmv", 0),
+                "Não Faturado R$ Item": pedido.get("nao_faturado_cmv", 0),
+                "Saldo R$ Pedido": pedido.get("saldo_cmv", 0),
+                "Pré-nota R$ Pedido": pedido.get("pre_nota_cmv", 0),
+                "Não Faturado R$ Pedido": pedido.get("nao_faturado_cmv", 0),
                 "ultima_cobranca": pedido.get("ultima_cobranca", ""),
             })
             continue
@@ -2030,18 +2035,17 @@ def montar_exportacao_acionar_comprador():
                 "data_prev_entrega": pedido.get("dt_agendada", ""),
                 "status": pedido.get("status", ""),
                 "cobrancas": pedido.get("cobrancas", 0),
-                "codigo": item.get("codigo", ""),
-                "descricao": item.get("descricao", ""),
-                "qtd": item.get("qtd", 0),
-                "saldo_qtd_item": item.get("saldo_qtd_item", 0),
-                "nao_faturado_qtd_item": item.get("nao_faturado_qtd_item", 0),
-                "pre_nota_qtd_item": item.get("pre_nota_qtd_item", 0),
-                "saldo_cmv_item": item.get("saldo_cmv_item", 0),
-                "pre_nota_cmv_item": item.get("pre_nota_cmv_item", 0),
-                "nao_faturado_cmv_item": item.get("nao_faturado_cmv_item", 0),
-                "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
-                "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
-                "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
+                "Cod_Prod": item.get("codigo", ""),
+                "Desc_Prod": item.get("descricao", ""),
+                "Saldo QTD": item.get("saldo_qtd_item", 0),
+                "Não Faturado QTD": item.get("nao_faturado_qtd_item", 0),
+                "Pré-nota QTD": item.get("pre_nota_qtd_item", 0),
+                "Saldo R$ Item": item.get("saldo_cmv_item", 0),
+                "Pré-nota R$ Item": item.get("pre_nota_cmv_item", 0),
+                "Não Faturado R$ Item": item.get("nao_faturado_cmv_item", 0),
+                "Saldo R$ Pedido": pedido.get("saldo_cmv", 0),
+                "Pré-nota R$ Pedido": pedido.get("pre_nota_cmv", 0),
+                "Não Faturado R$ Pedido": pedido.get("nao_faturado_cmv", 0),
                 "ultima_cobranca": pedido.get("ultima_cobranca", ""),
             })
 
@@ -2056,18 +2060,17 @@ def montar_exportacao_acionar_comprador():
             "data_prev_entrega",
             "status",
             "cobrancas",
-            "codigo",
-            "descricao",
-            "qtd",
-            "saldo_qtd_item",
-            "nao_faturado_qtd_item",
-            "pre_nota_qtd_item",
-            "saldo_cmv_item",
-            "pre_nota_cmv_item",
-            "nao_faturado_cmv_item",
-            "saldo_cmv_pedido",
-            "pre_nota_cmv_pedido",
-            "nao_faturado_cmv_pedido",
+            "Cod_Prod",
+            "Desc_Prod",
+            "Saldo QTD",
+            "Não Faturado QTD",
+            "Pré-nota QTD",
+            "Saldo R$ Item",
+            "Pré-nota R$ Item",
+            "Não Faturado R$ Item",
+            "Saldo R$ Pedido",
+            "Pré-nota R$ Pedido",
+            "Não Faturado R$ Pedido",
             "ultima_cobranca",
         ]
 
@@ -2091,7 +2094,7 @@ def tela_exportar_acionar_comprador():
 
     st.caption(
         "Exporta todos os pedidos ativos com status ACIONAR COMPRADOR, "
-        "trazendo os itens destrinchados com código, descrição, quantidade e valores por item."
+        "trazendo Cod_Prod, Desc_Prod, quantidades e valores por item."
     )
 
     df_export = montar_exportacao_acionar_comprador()
@@ -2105,7 +2108,7 @@ def tela_exportar_acionar_comprador():
     c1, c2, c3 = st.columns(3)
     c1.metric("Linhas de itens", len(df_export))
     c2.metric("Pedidos", df_export["pedido"].nunique())
-    c3.metric("Saldo CMV", formatar_moeda(df_pedidos_unicos["saldo_cmv_pedido"].sum()))
+    c3.metric("Saldo CMV", formatar_moeda(df_pedidos_unicos["Saldo R$ Pedido"].sum()))
 
     st.dataframe(
         formatar_df_moeda(df_export),
