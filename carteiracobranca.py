@@ -384,7 +384,7 @@ def retry_config():
         initial=1.0,
         maximum=10.0,
         multiplier=2.0,
-        deadline=90.0
+        deadline=60.0
     )
 
 
@@ -401,19 +401,20 @@ def salvar_em_lotes(operacoes):
         contador += 1
 
         if contador >= 450:
-            batch.commit(retry=retry_config(), timeout=90)
+            batch.commit(retry=retry_config(), timeout=60)
             batch = db.batch()
             contador = 0
 
     if contador:
-        batch.commit(retry=retry_config(), timeout=90)
+        batch.commit(retry=retry_config(), timeout=60)
 
 
-def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=100):
+def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=1000):
     try:
         col = db.collection(COLLECTION)
         query_base = col
 
+        # Consulta rápida para carteira do analista
         if analista and ativos is True:
             query_base = query_base.where(
                 "analista_ativo_key",
@@ -421,6 +422,7 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
                 chave_analista_ativo(analista, True)
             )
 
+        # Consulta rápida para fora do atraso / retirados
         elif status and ativos is False:
             query_base = query_base.where(
                 "status_ativo_key",
@@ -443,53 +445,39 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
         if campos:
             query_base = query_base.select(campos)
 
-        linhas = []
-        ultimo_doc = None
-
-        while True:
-            query = query_base.order_by("__name__").limit(tamanho_lote)
-
-            if ultimo_doc is not None:
-                query = query.start_after(ultimo_doc)
-
-            docs_lote = list(
-                query.stream(
-                    retry=retry_config(),
-                    timeout=90
-                )
+        # Sem order_by e sem paginação para evitar timeout no Streamlit Cloud
+        docs = list(
+            query_base.limit(tamanho_lote).stream(
+                retry=retry_config(),
+                timeout=30
             )
+        )
 
-            if not docs_lote:
-                break
+        linhas = []
 
-            for d in docs_lote:
-                item = d.to_dict()
-                item["doc_id"] = d.id
+        for d in docs:
+            item = d.to_dict()
+            item["doc_id"] = d.id
 
-                if ativos is True and item.get("ativo") is not True:
-                    continue
+            if ativos is True and item.get("ativo") is not True:
+                continue
 
-                if ativos is False and item.get("ativo") is not False:
-                    continue
+            if ativos is False and item.get("ativo") is not False:
+                continue
 
-                if analista and item.get("analista") != analista:
-                    continue
+            if analista and item.get("analista") != analista:
+                continue
 
-                if status and item.get("status") != status:
-                    continue
+            if status and item.get("status") != status:
+                continue
 
-                linhas.append(item)
-
-            ultimo_doc = docs_lote[-1]
-
-            if len(docs_lote) < tamanho_lote:
-                break
+            linhas.append(item)
 
         return linhas
 
     except Exception as e:
         st.error("Não consegui consultar o Firebase agora.")
-        st.info("A consulta foi reduzida, mas ainda houve timeout ou configuração pendente no Firestore.")
+        st.info("Se você acabou de subir a versão nova, entre como Admin, envie a carteira e clique em Processar carteira para criar as chaves dos analistas.")
         with st.expander("Ver detalhe técnico do erro"):
             st.code(repr(e))
         st.stop()
@@ -517,7 +505,7 @@ def buscar_docs_por_ids(doc_ids, tamanho_lote=100, campos=None):
                         refs,
                         field_paths=campos,
                         retry=retry_config(),
-                        timeout=90
+                        timeout=60
                     )
                 )
 
@@ -556,7 +544,7 @@ def buscar_docs_por_ids(doc_ids, tamanho_lote=100, campos=None):
 def buscar_doc(doc_id):
     try:
         ref = db.collection(COLLECTION).document(doc_id)
-        snap = ref.get(retry=retry_config(), timeout=90)
+        snap = ref.get(retry=retry_config(), timeout=60)
 
         if not snap.exists:
             return None
@@ -606,7 +594,7 @@ def registrar_cobranca(doc_id, usuario, observacao):
             "historico": ArrayUnion([evento])
         },
         retry=retry_config(),
-        timeout=90
+        timeout=60
     )
 
 
@@ -631,7 +619,7 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
             "historico": ArrayUnion([evento])
         },
         retry=retry_config(),
-        timeout=90
+        timeout=60
     )
 
 # =========================
@@ -876,7 +864,7 @@ def processar_carteira(df, usuario):
     ativos_anteriores = buscar_docs(
         ativos=True,
         campos=["ativo", "analista"],
-        tamanho_lote=100
+        tamanho_lote=1000
     )
 
     data_proc = agora_str()
@@ -1382,7 +1370,7 @@ def tela_carteira(analista=None):
         ativos=True,
         analista=analista,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100
+        tamanho_lote=1000
     )
 
     df = montar_df_itens(itens)
@@ -1510,7 +1498,7 @@ def tela_fora_atraso():
         ativos=False,
         status=STATUS_FORA_ATRASO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100
+        tamanho_lote=1000
     )
 
     df = montar_df_itens(itens)
@@ -1543,7 +1531,7 @@ def tela_cancelados():
         ativos=False,
         status=STATUS_CANCELADO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100
+        tamanho_lote=1000
     )
 
     df = montar_df_itens(itens)
