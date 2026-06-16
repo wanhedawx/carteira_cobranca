@@ -54,6 +54,7 @@ STATUS_COBRADO_2 = "COBRADO 2X"
 STATUS_ACIONAR_COMPRADOR = "ACIONAR COMPRADOR"
 STATUS_COMPRADOR_ACIONADO = "COMPRADOR ACIONADO"
 STATUS_FORA_ATRASO = "FORA DO ATRASO"
+STATUS_COM_AGENDAMENTO = "COM AGENDAMENTO"
 STATUS_CANCELADO = "CANCELADO / RETIRADO"
 
 COLUNAS_MOEDA = [
@@ -103,6 +104,7 @@ st.markdown("""
     .comprador {background:#fee2e2;color:#991b1b;}
     .acionado {background:#ede9fe;color:#5b21b6;}
     .fora {background:#e2e8f0;color:#475569;}
+    .agendado {background:#dbeafe;color:#1e40af;}
     .cancelado {background:#f3f4f6;color:#374151;}
 </style>
 """, unsafe_allow_html=True)
@@ -274,6 +276,9 @@ def classe_status(status):
 
     if status == STATUS_FORA_ATRASO:
         return "fora"
+
+    if status == STATUS_COM_AGENDAMENTO:
+        return "agendado"
 
     if status == STATUS_CANCELADO:
         return "cancelado"
@@ -622,6 +627,20 @@ def mapear_colunas_fixas(df):
             "Data Prevista Entrega",
             "Menor Data Prev Entrega"
         ]),
+        "dt_agendamento": encontrar_coluna_fixa(df, [
+            "DT Agendamento",
+            "Dt Agendamento",
+            "Data Agendamento",
+            "Data Agendada",
+            "DT Agendada",
+            "Dt Agendada",
+            "DT Agendando",
+            "Dt Agendando",
+            "Data Agendando",
+            "Agendamento",
+            "Agendada",
+            "Agendando"
+        ]),
         "saldo_cmv": encontrar_coluna_fixa(df, [
             "Saldo R$ (CMV)",
             "Saldo R CMV",
@@ -667,6 +686,7 @@ def agregar_por_pedido(df, colunas):
     base["_fornecedor"] = base[colunas["fornecedor"]]
 
     base["_data_prev_entrega"] = base[colunas["data_prev_entrega"]].apply(converter_data)
+    base["_dt_agendamento"] = base[colunas["dt_agendamento"]].apply(converter_data)
 
     base["_saldo_cmv"] = base[colunas["saldo_cmv"]].apply(converter_numero)
     base["_pre_nota_cmv"] = base[colunas["pre_nota_cmv"]].apply(converter_numero)
@@ -678,7 +698,37 @@ def agregar_por_pedido(df, colunas):
         (base["_pedido"].astype(str).str.lower() != "nan")
     ].copy()
 
-    agrupado = base.groupby(
+    ids_arquivo_completo = set(hash_id(p) for p in base["_pedido"].astype(str).str.strip().unique())
+
+    total_itens_antes = len(base)
+
+    # REGRA PRINCIPAL:
+    # Tudo que já tem DT Agendamento preenchida sai da cobrança.
+    base_sem_agendamento = base[
+        base["_dt_agendamento"].isna()
+    ].copy()
+
+    retirados_agendamento = total_itens_antes - len(base_sem_agendamento)
+
+    ids_sem_agendamento = set(
+        hash_id(p)
+        for p in base_sem_agendamento["_pedido"].astype(str).str.strip().unique()
+    )
+
+    if base_sem_agendamento.empty:
+        agrupado = pd.DataFrame(columns=[
+            "_pedido", "departamento", "fornecedor", "menor_data_prev_entrega",
+            "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
+            "qtd_itens", "valor_total_cmv"
+        ])
+
+        agrupado.attrs["retirados_agendamento"] = retirados_agendamento
+        agrupado.attrs["ids_arquivo_completo"] = ids_arquivo_completo
+        agrupado.attrs["ids_sem_agendamento"] = ids_sem_agendamento
+
+        return agrupado
+
+    agrupado = base_sem_agendamento.groupby(
         "_pedido",
         dropna=False
     ).agg(
@@ -696,6 +746,10 @@ def agregar_por_pedido(df, colunas):
         agrupado["pre_nota_cmv"] +
         agrupado["nao_faturado_cmv"]
     )
+
+    agrupado.attrs["retirados_agendamento"] = retirados_agendamento
+    agrupado.attrs["ids_arquivo_completo"] = ids_arquivo_completo
+    agrupado.attrs["ids_sem_agendamento"] = ids_sem_agendamento
 
     return agrupado
 
@@ -771,7 +825,9 @@ def processar_carteira(df, usuario):
             "colunas": colunas,
         }
 
-    ids_arquivo = {x["doc_id"] for x in linhas_todas}
+    ids_arquivo_completo = agrupado.attrs.get("ids_arquivo_completo", set())
+    ids_sem_agendamento = agrupado.attrs.get("ids_sem_agendamento", set())
+
     ids_cobranca = {x["doc_id"] for x in linhas_cobranca}
 
     existentes_lista = buscar_docs_por_ids(ids_cobranca)
@@ -813,7 +869,7 @@ def processar_carteira(df, usuario):
                     "tipo": "RETORNO_PARA_COBRANCA",
                     "data": data_proc,
                     "usuario": usuario,
-                    "observacao": "Pedido voltou para cobrança por estar em atraso até a data limite."
+                    "observacao": "Pedido voltou para cobrança por estar em atraso e sem DT Agendamento."
                 }])
 
             operacoes.append(("set", ref, dados, True))
@@ -837,7 +893,7 @@ def processar_carteira(df, usuario):
                     "tipo": "ENTRADA_CARTEIRA",
                     "data": data_proc,
                     "usuario": usuario,
-                    "observacao": "Pedido entrou na carteira de cobrança por atraso."
+                    "observacao": "Pedido entrou na carteira de cobrança por estar em atraso e sem DT Agendamento."
                 }]
             }
 
@@ -845,6 +901,7 @@ def processar_carteira(df, usuario):
 
     cancelados = 0
     fora_atraso = 0
+    com_agendamento = 0
 
     for item in ativos_anteriores:
         doc_id = item["doc_id"]
@@ -854,7 +911,7 @@ def processar_carteira(df, usuario):
 
         ref = db.collection(COLLECTION).document(doc_id)
 
-        if doc_id not in ids_arquivo:
+        if doc_id not in ids_arquivo_completo:
             cancelados += 1
 
             evento = {
@@ -874,6 +931,25 @@ def processar_carteira(df, usuario):
 
             operacoes.append(("update", ref, dados, None))
 
+        elif doc_id not in ids_sem_agendamento:
+            com_agendamento += 1
+
+            evento = {
+                "tipo": "COM_AGENDAMENTO",
+                "data": data_proc,
+                "usuario": usuario,
+                "observacao": "Pedido está no arquivo, mas possui DT Agendamento preenchida. Retirado da cobrança."
+            }
+
+            dados = {
+                "ativo": False,
+                "status": STATUS_COM_AGENDAMENTO,
+                "atualizado_em": data_proc,
+                "historico": ArrayUnion([evento])
+            }
+
+            operacoes.append(("update", ref, dados, None))
+
         else:
             fora_atraso += 1
 
@@ -881,7 +957,7 @@ def processar_carteira(df, usuario):
                 "tipo": "FORA_DO_ATRASO",
                 "data": data_proc,
                 "usuario": usuario,
-                "observacao": "Pedido ainda está no arquivo, mas não está em atraso pela menor Data Prev Entrega. Retirado da cobrança."
+                "observacao": "Pedido está sem DT Agendamento, mas não está em atraso pela menor Data Prev Entrega. Retirado da cobrança."
             }
 
             dados = {
@@ -897,14 +973,17 @@ def processar_carteira(df, usuario):
 
     return {
         "erro": False,
-        "total_arquivo": len(linhas_todas),
+        "total_arquivo": len(ids_arquivo_completo),
+        "sem_agendamento": len(ids_sem_agendamento),
         "em_atraso": len(linhas_cobranca),
         "retirados_por_data": len(linhas_todas) - len(linhas_cobranca),
+        "retirados_agendamento": agrupado.attrs.get("retirados_agendamento", 0),
         "novos": novos,
         "mantidos": mantidos,
         "reativados": reativados,
         "cancelados": cancelados,
         "fora_atraso": fora_atraso,
+        "com_agendamento": com_agendamento,
         "avisos": avisos,
         "colunas": colunas,
         "agrupado": agrupado,
@@ -960,11 +1039,11 @@ if st.sidebar.button("Sair"):
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.caption("Regra de atraso")
+st.sidebar.caption("Regra de cobrança")
 st.sidebar.write(f"Hoje: **{data_br(hoje())}**")
 st.sidebar.write(f"Cobrar até: **{data_br(data_limite_cobranca())}**")
-st.sidebar.write("Usa a menor Data Prev Entrega do pedido.")
-st.sidebar.write("Pedido que sumiu do arquivo sai da conta.")
+st.sidebar.write("Primeiro retira quem tem DT Agendamento.")
+st.sidebar.write("Depois cobra atraso pela menor Data Prev Entrega.")
 
 
 # =========================
@@ -1077,8 +1156,8 @@ def configurar_colunas_e_processar(df, origem_texto):
     df.columns = [str(c).strip() for c in df.columns]
 
     st.info(
-        f"Regra aplicada: usa a **menor Data Prev Entrega do pedido**. "
-        f"Hoje a cobrança considera somente pedidos com menor data até "
+        f"Regra aplicada: primeiro retira produtos com **DT Agendamento preenchida**. "
+        f"Depois considera somente pedidos sem agendamento com menor Data Prev Entrega até "
         f"**{data_br(data_limite_cobranca())}**."
     )
 
@@ -1094,7 +1173,8 @@ def configurar_colunas_e_processar(df, origem_texto):
         {"Campo usado": "Pedido", "Coluna encontrada": colunas.get("pedido")},
         {"Campo usado": "Departamento", "Coluna encontrada": colunas.get("departamento")},
         {"Campo usado": "Fornecedor", "Coluna encontrada": colunas.get("fornecedor")},
-        {"Campo usado": "Menor Data Prev Entrega", "Coluna encontrada": colunas.get("data_prev_entrega")},
+        {"Campo usado": "Data Prev Entrega", "Coluna encontrada": colunas.get("data_prev_entrega")},
+        {"Campo usado": "DT Agendamento", "Coluna encontrada": colunas.get("dt_agendamento")},
         {"Campo usado": "Saldo CMV", "Coluna encontrada": colunas.get("saldo_cmv")},
         {"Campo usado": "Pré-nota CMV", "Coluna encontrada": colunas.get("pre_nota_cmv")},
         {"Campo usado": "Não Faturado CMV", "Coluna encontrada": colunas.get("nao_faturado_cmv")},
@@ -1119,16 +1199,23 @@ def configurar_colunas_e_processar(df, origem_texto):
     total_nao_faturado = sum(x["nao_faturado_cmv"] for x in linhas_cobranca)
     total_geral = sum(x["valor_total_cmv"] for x in linhas_cobranca)
 
+    retirados_agendamento = agrupado.attrs.get("retirados_agendamento", 0)
+    ids_arquivo_completo = agrupado.attrs.get("ids_arquivo_completo", set())
+    ids_sem_agendamento = agrupado.attrs.get("ids_sem_agendamento", set())
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pedidos no arquivo", len(linhas_todas))
-    c2.metric("Entram na cobrança", len(linhas_cobranca))
-    c3.metric("Fora por data", len(linhas_todas) - len(linhas_cobranca))
+    c1.metric("Pedidos no arquivo", len(ids_arquivo_completo))
+    c2.metric("Pedidos sem agendamento", len(ids_sem_agendamento))
+    c3.metric("Entram na cobrança", len(linhas_cobranca))
     c4.metric("Valor total CMV", formatar_moeda(total_geral))
 
-    c5, c6, c7 = st.columns(3)
-    c5.metric("Saldo CMV", formatar_moeda(total_saldo))
-    c6.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
-    c7.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Itens retirados por DT Agendamento", retirados_agendamento)
+    c6.metric("Fora por data", len(linhas_todas) - len(linhas_cobranca))
+    c7.metric("Saldo CMV", formatar_moeda(total_saldo))
+    c8.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
+
+    st.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
 
     if not preview_cobranca.empty:
         st.subheader("Separação dos atrasados por analista")
@@ -1195,24 +1282,29 @@ def configurar_colunas_e_processar(df, origem_texto):
         st.success("Carteira processada com sucesso!")
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total no arquivo", resultado["total_arquivo"])
-        c2.metric("Entraram na cobrança", resultado["em_atraso"])
-        c3.metric("Retirados por data", resultado["retirados_por_data"])
+        c1.metric("Pedidos no arquivo", resultado["total_arquivo"])
+        c2.metric("Pedidos sem agendamento", resultado["sem_agendamento"])
+        c3.metric("Entraram na cobrança", resultado["em_atraso"])
         c4.metric("Retirados da conta", resultado["cancelados"])
 
         c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Novos", resultado["novos"])
-        c6.metric("Mantidos", resultado["mantidos"])
-        c7.metric("Reativados", resultado["reativados"])
+        c5.metric("Itens retirados por DT Agendamento", resultado["retirados_agendamento"])
+        c6.metric("Fora por data", resultado["retirados_por_data"])
+        c7.metric("Com agendamento", resultado["com_agendamento"])
         c8.metric("Fora do atraso", resultado["fora_atraso"])
+
+        c9, c10, c11 = st.columns(3)
+        c9.metric("Novos", resultado["novos"])
+        c10.metric("Mantidos", resultado["mantidos"])
+        c11.metric("Reativados", resultado["reativados"])
 
 
 def tela_upload():
     st.header("📤 Atualizar carteira")
 
     st.warning(
-        "A cobrança será montada somente com a menor Data Prev Entrega do pedido até ontem. "
-        "Exemplo: hoje cobra até ontem; amanhã cobra até hoje. "
+        "A cobrança será montada somente com produtos/pedidos sem DT Agendamento. "
+        "Depois disso, o sistema cobra o que estiver com Data Prev Entrega até ontem. "
         "Pedido que sumir do arquivo será retirado da conta, não será marcado como entregue."
     )
 
@@ -1231,6 +1323,7 @@ def tela_carteira(analista=None):
     st.header(titulo)
 
     st.info(f"Data limite da cobrança hoje: **{data_br(data_limite_cobranca())}**")
+    st.caption("Aparecem aqui somente pedidos sem DT Agendamento e com Data Prev Entrega em atraso.")
 
     itens = buscar_docs(ativos=True)
     df = montar_df_itens(itens)
@@ -1294,7 +1387,7 @@ def tela_carteira(analista=None):
                     <b>Departamento:</b> {linha.get('departamento', '-')}<br>
                     <b>Menor Data Prev Entrega:</b> {linha.get('dt_agendada', '-') or '-'}<br>
                     <b>Fornecedor:</b> {linha.get('fornecedor', '-') or '-'}<br>
-                    <b>Qtd. itens do pedido:</b> {linha.get('qtd_itens', 0)}<br>
+                    <b>Qtd. itens do pedido sem agendamento:</b> {linha.get('qtd_itens', 0)}<br>
                     <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
                     <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
                     <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
@@ -1409,29 +1502,29 @@ def tela_cancelados():
 def tela_regras():
     st.header("⚙️ Regras e departamentos")
 
-    st.subheader("Regra da data")
-    st.write(f"Hoje é {data_br(hoje())}.")
-    st.write(f"A carteira de cobrança considera somente pedidos com menor Data Prev Entrega até {data_br(data_limite_cobranca())}.")
-    st.write("Se o pedido tiver vários itens, o sistema usa a menor Data Prev Entrega.")
-    st.write("Pedidos com menor Data Prev Entrega de hoje ou futura ficam fora da cobrança.")
-    st.write("Se o pedido sumir do arquivo completo, ele será retirado da cobrança e da contagem.")
-    st.write("Não existe regra de marcar como entregue.")
+    st.subheader("Regra da cobrança")
+    st.write("1. Primeiro o sistema remove produtos que possuem DT Agendamento preenchida.")
+    st.write("2. Só ficam produtos sem DT Agendamento.")
+    st.write(f"3. Depois, cobra somente pedidos com menor Data Prev Entrega até {data_br(data_limite_cobranca())}.")
+    st.write("4. Se o pedido tiver vários itens sem agendamento, o sistema usa a menor Data Prev Entrega.")
+    st.write("5. Se o pedido sumir do arquivo completo, ele será retirado da cobrança e da contagem.")
+    st.write("6. Não existe regra de marcar como entregue.")
 
     st.subheader("Valores considerados")
     st.write("Valor Total CMV = Saldo R$ (CMV) + Pré-nota R$ (CMV) + Não Faturado R$ (CMV).")
+    st.write("Os valores são somados apenas dos produtos que ficaram sem DT Agendamento.")
 
     st.subheader("Analistas")
 
     for analista, deps in ANALISTAS.items():
         st.markdown(f"**{analista}**: {', '.join(deps)}")
 
-    st.subheader("Regra da cobrança")
+    st.subheader("Regra da cobrança manual")
     st.write("1. Pedido atrasado entrou na carteira: fica como pendente.")
     st.write("2. Clicou em registrar cobrança 1 vez: status Cobrado 1x.")
     st.write("3. Clicou em registrar cobrança 2 vezes: status Cobrado 2x.")
     st.write("4. Na 3ª cobrança: status muda para Acionar Comprador.")
     st.write("5. Quando o comprador for acionado, marque no sistema.")
-    st.write("6. Se o pedido sair do arquivo, ele sai da conta como Cancelado / Retirado.")
 
 
 # =========================
