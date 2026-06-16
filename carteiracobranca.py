@@ -29,7 +29,7 @@ ANALISTAS = {
         "Eletrica", "Elétrica", "Hidraulica", "Hidráulica", "Iluminação", "Iluminacao"
     ],
     "Jonatas": [
-        "Moveis e Decoração", "Móveis e Decoração", "Cama Mesa e Banho", "Lazer",
+        "Moveis e Colchoes", "Decoração", "Móveis e Decoração", "Cama Mesa e Banho", "Lazer",
         "Casa e UD e Jardim", "Casa UD e Jardim", "Casa e Jardim", "Utilidades Domésticas"
     ],
     "Beatriz": [
