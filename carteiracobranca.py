@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from unicodedata import normalize
 import hashlib
 import io
+import re
 
 # =========================
 # CONFIGURAÇÕES
@@ -372,14 +373,18 @@ def extrair_pedidos_texto(texto):
     if not texto:
         return []
 
-    txt = str(texto)
-    txt = txt.replace("\n", " ")
-    txt = txt.replace(",", " ")
-    txt = txt.replace(";", " ")
-    txt = txt.replace("|", " ")
+    txt = str(texto).upper()
+    partes = re.split(r"[\s,;|]+", txt)
 
-    partes = [p.strip() for p in txt.split(" ") if p.strip()]
-    return list(dict.fromkeys([norm(p) for p in partes]))
+    pedidos = []
+
+    for p in partes:
+        p = p.strip()
+        if not p:
+            continue
+        pedidos.append(norm(p))
+
+    return list(dict.fromkeys(pedidos))
 
 
 # =========================
@@ -876,6 +881,105 @@ def registrar_cobranca_lote(doc_ids, usuario, observacao):
 
     except Exception as e:
         st.error("Erro ao registrar cobrança em lote.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return
+
+    itens = buscar_docs_por_ids(
+        ids,
+        campos=[
+            "doc_id",
+            "pedido",
+            "cobrancas",
+            "comprador_acionado",
+            "status",
+        ]
+    )
+
+    if not itens:
+        st.error("Nenhum pedido encontrado para excluir cobrança.")
+        return
+
+    data_evento = agora_str()
+    updates = []
+    historicos = []
+    ignorados = []
+
+    for item in itens:
+        doc_id = item["doc_id"]
+        atual = int(item.get("cobrancas", 0) or 0)
+
+        if atual <= 0:
+            ignorados.append(item.get("pedido", doc_id))
+            continue
+
+        nova_qtd = atual - 1
+        comprador_acionado = bool(item.get("comprador_acionado", False))
+
+        if comprador_acionado:
+            novo_status = STATUS_COMPRADOR_ACIONADO
+        else:
+            novo_status = status_por_cobranca(nova_qtd, False)
+
+        updates.append({
+            "doc_id": doc_id,
+            "cobrancas": nova_qtd,
+            "status": novo_status,
+            "atualizado_em": data_evento,
+        })
+
+        historicos.append({
+            "doc_id": doc_id,
+            "pedido": item.get("pedido", ""),
+            "tipo": "EXCLUSAO_COBRANCA",
+            "data": data_evento,
+            "usuario": usuario,
+            "observacao": observacao or "Exclusão da última cobrança registrada.",
+            "cobranca_numero": atual,
+            "status_apos": novo_status,
+        })
+
+    if not updates:
+        st.warning("Nenhum pedido tinha cobrança para excluir.")
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        cobrancas = :cobrancas,
+                        status = :status,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                updates
+            )
+
+            conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        if ignorados:
+            st.warning(
+                "Alguns pedidos foram ignorados porque estavam com 0 cobrança: "
+                + ", ".join(str(x) for x in ignorados[:20])
+            )
+
+    except Exception as e:
+        st.error("Erro ao excluir cobrança em lote.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -1788,7 +1892,7 @@ def tela_carteira(analista=None):
         + df_filtrado["fornecedor"].astype(str)
     )
 
-    st.caption("Você pode selecionar vários pedidos abaixo ou colar vários pedidos no campo de texto.")
+    st.caption("Você pode selecionar vários pedidos abaixo ou colar vários pedidos, um por linha.")
 
     selecionados_opcoes = st.multiselect(
         "Selecione um ou mais pedidos",
@@ -1799,8 +1903,8 @@ def tela_carteira(analista=None):
     pedidos_colados = st.text_area(
         "Ou cole vários pedidos para aplicar o mesmo retorno",
         key=f"pedidos_colados_{analista or 'geral'}",
-        height=90,
-        placeholder="Ex.: 12345 45678 99999\nou um pedido por linha"
+        height=110,
+        placeholder="Exemplo:\nLADPOD\nLAEQH2\nLADK55"
     )
 
     dfs_selecionados = []
@@ -1813,11 +1917,26 @@ def tela_carteira(analista=None):
     pedidos_digitados_norm = extrair_pedidos_texto(pedidos_colados)
 
     if pedidos_digitados_norm:
+        pedidos_normalizados_df = df_filtrado["pedido"].apply(norm)
+
         df_digitados = df_filtrado[
-            df_filtrado["pedido"].apply(lambda x: norm(x) in pedidos_digitados_norm)
+            pedidos_normalizados_df.isin(pedidos_digitados_norm)
         ]
 
         dfs_selecionados.append(df_digitados)
+
+        encontrados_norm = set(df_digitados["pedido"].apply(norm).tolist())
+        nao_encontrados = [p for p in pedidos_digitados_norm if p not in encontrados_norm]
+
+        with st.expander("Pedidos colados reconhecidos"):
+            if pedidos_digitados_norm:
+                st.code("\n".join(pedidos_digitados_norm))
+
+        if nao_encontrados:
+            st.warning(
+                "Pedidos colados que não foram encontrados no filtro atual: "
+                + ", ".join(nao_encontrados)
+            )
 
     if dfs_selecionados:
         df_acao = pd.concat(dfs_selecionados, ignore_index=True)
@@ -1868,7 +1987,7 @@ def tela_carteira(analista=None):
 
     doc_ids = df_acao["doc_id"].dropna().tolist()
 
-    col_a, col_b = st.columns(2)
+    col_a, col_b, col_c = st.columns(3)
 
     with col_a:
         if st.button(
@@ -1894,13 +2013,32 @@ def tela_carteira(analista=None):
             st.caption("Para marcar comprador acionado em lote, todos os pedidos precisam estar na 3ª cobrança ou no status Acionar Comprador.")
 
         if st.button(
-            "Marcar comprador acionado em lote",
+            "Marcar comprador acionado",
             key=f"comprador_lote_{analista or 'geral'}",
             use_container_width=True,
             disabled=not pode_acionar
         ):
             marcar_comprador_acionado_lote(doc_ids, usuario_logado, obs)
             st.success(f"Comprador acionado registrado para {len(doc_ids)} pedido(s).")
+            st.rerun()
+
+    with col_c:
+        pode_excluir = False
+
+        for _, linha in df_acao.iterrows():
+            cobrancas = int(linha.get("cobrancas", 0) or 0)
+
+            if cobrancas > 0:
+                pode_excluir = True
+
+        if st.button(
+            "Excluir última cobrança",
+            key=f"excluir_cobranca_lote_{analista or 'geral'}",
+            use_container_width=True,
+            disabled=not pode_excluir
+        ):
+            excluir_ultima_cobranca_lote(doc_ids, usuario_logado, obs)
+            st.success("Última cobrança excluída dos pedidos selecionados quando aplicável.")
             st.rerun()
 
     if len(df_acao) == 1:
