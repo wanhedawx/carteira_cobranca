@@ -42,6 +42,9 @@ ANALISTAS = {
         "Materiais de Construção", "Materias de Construçao", "Materiais de Construcao",
         "Banho e Cozinha"
     ],
+    "Rose": [
+        "Pisos e revestimento"    
+    ],
 }
 
 STATUS_PENDENTE = "PENDENTE"
