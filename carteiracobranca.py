@@ -4,7 +4,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1 import ArrayUnion
 from google.api_core.retry import Retry
-from google.api_core.exceptions import RetryError, DeadlineExceeded, ServiceUnavailable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unicodedata import normalize
@@ -81,6 +80,8 @@ CAMPOS_LISTAGEM = [
     "data_ultimo_upload",
     "data_cancelamento",
     "ativo",
+    "analista_ativo_key",
+    "status_ativo_key",
 ]
 
 # =========================
@@ -171,6 +172,14 @@ def norm(txt):
 def hash_id(*partes):
     texto = "|".join(norm(p) for p in partes if str(p).strip() != "")
     return hashlib.sha1(texto.encode("utf-8")).hexdigest()[:24]
+
+
+def chave_analista_ativo(analista, ativo=True):
+    return f"{norm(analista)}|{'1' if ativo else '0'}"
+
+
+def chave_status_ativo(status, ativo=True):
+    return f"{norm(status)}|{'1' if ativo else '0'}"
 
 
 def converter_data(valor):
@@ -400,21 +409,34 @@ def salvar_em_lotes(operacoes):
         batch.commit(retry=retry_config(), timeout=90)
 
 
-def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=200):
+def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=100):
     try:
         col = db.collection(COLLECTION)
         query_base = col
 
-        # Para evitar índice composto pesado:
-        # - se tiver analista, busca pelo analista e filtra ativo/status localmente.
-        # - se tiver status, busca pelo status e filtra ativo localmente.
-        # - se não tiver, busca por ativo.
-        if analista:
+        if analista and ativos is True:
+            query_base = query_base.where(
+                "analista_ativo_key",
+                "==",
+                chave_analista_ativo(analista, True)
+            )
+
+        elif status and ativos is False:
+            query_base = query_base.where(
+                "status_ativo_key",
+                "==",
+                chave_status_ativo(status, False)
+            )
+
+        elif analista:
             query_base = query_base.where("analista", "==", analista)
+
         elif status:
             query_base = query_base.where("status", "==", status)
+
         elif ativos is True:
             query_base = query_base.where("ativo", "==", True)
+
         elif ativos is False:
             query_base = query_base.where("ativo", "==", False)
 
@@ -467,7 +489,7 @@ def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lo
 
     except Exception as e:
         st.error("Não consegui consultar o Firebase agora.")
-        st.info("Consulta reduzida, mas ainda houve timeout ou necessidade de índice/configuração no Firestore.")
+        st.info("A consulta foi reduzida, mas ainda houve timeout ou configuração pendente no Firestore.")
         with st.expander("Ver detalhe técnico do erro"):
             st.code(repr(e))
         st.stop()
@@ -572,11 +594,15 @@ def registrar_cobranca(doc_id, usuario, observacao):
         "status_apos": novo_status,
     }
 
+    analista = item.get("analista", "")
+
     db.collection(COLLECTION).document(doc_id).update(
         {
             "cobrancas": nova_qtd,
             "status": novo_status,
             "ultima_cobranca": agora_str(),
+            "status_ativo_key": chave_status_ativo(novo_status, True),
+            "analista_ativo_key": chave_analista_ativo(analista, True),
             "historico": ArrayUnion([evento])
         },
         retry=retry_config(),
@@ -585,6 +611,9 @@ def registrar_cobranca(doc_id, usuario, observacao):
 
 
 def marcar_comprador_acionado(doc_id, usuario, observacao):
+    item = buscar_doc(doc_id)
+    analista = item.get("analista", "") if item else ""
+
     evento = {
         "tipo": "COMPRADOR_ACIONADO",
         "data": agora_str(),
@@ -597,6 +626,8 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
             "comprador_acionado": True,
             "status": STATUS_COMPRADOR_ACIONADO,
             "data_comprador_acionado": agora_str(),
+            "status_ativo_key": chave_status_ativo(STATUS_COMPRADOR_ACIONADO, True),
+            "analista_ativo_key": chave_analista_ativo(analista, True),
             "historico": ArrayUnion([evento])
         },
         retry=retry_config(),
@@ -837,14 +868,15 @@ def processar_carteira(df, usuario):
             "status",
             "cobrancas",
             "comprador_acionado",
+            "analista",
         ]
     )
     existentes = {x["doc_id"]: x for x in existentes_lista}
 
     ativos_anteriores = buscar_docs(
         ativos=True,
-        campos=["ativo"],
-        tamanho_lote=200
+        campos=["ativo", "analista"],
+        tamanho_lote=100
     )
 
     data_proc = agora_str()
@@ -871,6 +903,8 @@ def processar_carteira(df, usuario):
                 "comprador_acionado": comprador_acionado,
                 "data_ultimo_upload": data_proc,
                 "atualizado_em": data_proc,
+                "analista_ativo_key": chave_analista_ativo(item["analista"], True),
+                "status_ativo_key": chave_status_ativo(status, True),
             }
 
             if existente.get("ativo") is True:
@@ -895,6 +929,8 @@ def processar_carteira(df, usuario):
                 "status": STATUS_PENDENTE,
                 "cobrancas": 0,
                 "comprador_acionado": False,
+                "analista_ativo_key": chave_analista_ativo(item["analista"], True),
+                "status_ativo_key": chave_status_ativo(STATUS_PENDENTE, True),
                 "data_primeira_entrada": data_proc,
                 "data_ultimo_upload": data_proc,
                 "ultima_cobranca": "",
@@ -922,6 +958,7 @@ def processar_carteira(df, usuario):
             continue
 
         ref = db.collection(COLLECTION).document(doc_id)
+        analista_item = item.get("analista", "")
 
         if doc_id not in ids_arquivo_completo:
             cancelados += 1
@@ -938,6 +975,8 @@ def processar_carteira(df, usuario):
                 "status": STATUS_CANCELADO,
                 "data_cancelamento": data_proc,
                 "atualizado_em": data_proc,
+                "analista_ativo_key": chave_analista_ativo(analista_item, False),
+                "status_ativo_key": chave_status_ativo(STATUS_CANCELADO, False),
                 "historico": ArrayUnion([evento])
             }
 
@@ -957,6 +996,8 @@ def processar_carteira(df, usuario):
                 "ativo": False,
                 "status": STATUS_COM_AGENDAMENTO,
                 "atualizado_em": data_proc,
+                "analista_ativo_key": chave_analista_ativo(analista_item, False),
+                "status_ativo_key": chave_status_ativo(STATUS_COM_AGENDAMENTO, False),
                 "historico": ArrayUnion([evento])
             }
 
@@ -976,6 +1017,8 @@ def processar_carteira(df, usuario):
                 "ativo": False,
                 "status": STATUS_FORA_ATRASO,
                 "atualizado_em": data_proc,
+                "analista_ativo_key": chave_analista_ativo(analista_item, False),
+                "status_ativo_key": chave_status_ativo(STATUS_FORA_ATRASO, False),
                 "historico": ArrayUnion([evento])
             }
 
@@ -1339,7 +1382,7 @@ def tela_carteira(analista=None):
         ativos=True,
         analista=analista,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=200
+        tamanho_lote=100
     )
 
     df = montar_df_itens(itens)
@@ -1347,7 +1390,7 @@ def tela_carteira(analista=None):
     metricas(df)
 
     if df.empty:
-        st.info("Nenhum pedido ativo em atraso encontrado.")
+        st.info("Nenhum pedido ativo em atraso encontrado para este usuário.")
         return
 
     df_filtrado = aplicar_filtros(
@@ -1467,7 +1510,7 @@ def tela_fora_atraso():
         ativos=False,
         status=STATUS_FORA_ATRASO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=200
+        tamanho_lote=100
     )
 
     df = montar_df_itens(itens)
@@ -1500,7 +1543,7 @@ def tela_cancelados():
         ativos=False,
         status=STATUS_CANCELADO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=200
+        tamanho_lote=100
     )
 
     df = montar_df_itens(itens)
