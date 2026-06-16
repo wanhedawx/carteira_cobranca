@@ -58,6 +58,9 @@ COLUNAS_MOEDA = [
     "saldo_cmv",
     "pre_nota_cmv",
     "nao_faturado_cmv",
+    "saldo_cmv_item",
+    "pre_nota_cmv_item",
+    "nao_faturado_cmv_item",
     "saldo_cmv_pedido",
     "pre_nota_cmv_pedido",
     "nao_faturado_cmv_pedido",
@@ -1090,39 +1093,113 @@ def encontrar_coluna_fixa(df, nomes_possiveis):
 
 
 def encontrar_colunas_itens(df):
+    col_codigo = encontrar_coluna_fixa(df, [
+        "Cod_Prod", "Cod Prod", "Código", "Codigo", "Cód", "Cod",
+        "Cód Produto", "Cod Produto", "Código Produto", "Codigo Produto",
+        "Cód. Produto", "Cod. Produto", "Código Item", "Codigo Item",
+        "Cod Item", "Cód Item", "SKU", "Item", "Produto Código", "Produto Codigo",
+        "Código Mercadoria", "Codigo Mercadoria", "Cod Mercadoria"
+    ])
+
+    col_descricao = encontrar_coluna_fixa(df, [
+        "Desc_Prod", "Desc Prod", "Descrição", "Descricao", "Desc",
+        "Descrição Produto", "Descricao Produto",
+        "Produto", "Nome Produto", "Desc Produto", "Desc Item", "Mercadoria",
+        "Descrição Item", "Descricao Item", "Descrição Mercadoria", "Descricao Mercadoria",
+        "Nome Mercadoria", "Item Descrição", "Item Descricao"
+    ])
+
+    col_saldo_qtd = encontrar_coluna_fixa(df, [
+        "Saldo QTD", "Saldo Quantidade", "Qtd", "QTD", "Quantidade", "Qtde", "Qt",
+        "Qtd Pedida", "QTD Pedido"
+    ])
+
+    col_nao_faturado_qtd = encontrar_coluna_fixa(df, [
+        "Não Faturado QTD", "Nao Faturado QTD", "Não Fatuado QTD", "Nao Fatuado QTD"
+    ])
+
+    col_pre_nota_qtd = encontrar_coluna_fixa(df, [
+        "Pré-nota QTD", "Pre-nota QTD", "Pré-nota Qtd", "Pre-nota Qtd",
+        "Pré Nota QTD", "Pre Nota QTD"
+    ])
+
+    mapa = {norm(c): c for c in df.columns}
+
+    if not col_codigo:
+        for col_n, col_original in mapa.items():
+            if (
+                ("COD PROD" in col_n or "COD" in col_n or "SKU" in col_n)
+                and "BARRAS" not in col_n
+                and "FABRICA" not in col_n
+                and "FORNEC" not in col_n
+                and "PEDIDO" not in col_n
+                and "DEPART" not in col_n
+            ):
+                col_codigo = col_original
+                break
+
+    if not col_descricao:
+        for col_n, col_original in mapa.items():
+            if (
+                ("DESC PROD" in col_n or "DESC" in col_n)
+                and "DEPART" not in col_n
+                and "FORNEC" not in col_n
+            ):
+                col_descricao = col_original
+                break
+
+    if not col_saldo_qtd:
+        for col_n, col_original in mapa.items():
+            if "SALDO QTD" in col_n:
+                col_saldo_qtd = col_original
+                break
+
+    if not col_nao_faturado_qtd:
+        for col_n, col_original in mapa.items():
+            if "NAO FATURADO QTD" in col_n or "NAO FATUADO QTD" in col_n:
+                col_nao_faturado_qtd = col_original
+                break
+
+    if not col_pre_nota_qtd:
+        for col_n, col_original in mapa.items():
+            if "PRE NOTA QTD" in col_n or "PRE NOTA QTD" in col_n:
+                col_pre_nota_qtd = col_original
+                break
+
     return {
-        "codigo": encontrar_coluna_fixa(df, [
-            "Código", "Codigo", "Cód Produto", "Cod Produto",
-            "Código Produto", "Codigo Produto", "Cód. Produto",
-            "Cod. Produto", "Código Item", "Codigo Item",
-            "SKU", "Item", "Cod Item", "Cód Item"
-        ]),
-        "descricao": encontrar_coluna_fixa(df, [
-            "Descrição", "Descricao", "Descrição Produto",
-            "Descricao Produto", "Produto", "Nome Produto",
-            "Desc Produto", "Desc Item", "Mercadoria",
-            "Descrição Item", "Descricao Item"
-        ]),
-        "qtd": encontrar_coluna_fixa(df, [
-            "Qtd", "QTD", "Quantidade", "Qtde",
-            "Qtd Pedida", "QTD Pedido", "Saldo QTD",
-            "Saldo Quantidade", "Não Faturado QTD",
-            "Nao Faturado QTD", "Pré-nota QTD", "Pre-nota QTD"
-        ]),
+        "codigo": col_codigo,
+        "descricao": col_descricao,
+        "qtd": col_saldo_qtd,
+        "saldo_qtd": col_saldo_qtd,
+        "nao_faturado_qtd": col_nao_faturado_qtd,
+        "pre_nota_qtd": col_pre_nota_qtd,
     }
 
 
-def montar_itens_do_pedido(grupo, colunas_itens):
+def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
     itens = []
 
     col_codigo = colunas_itens.get("codigo")
     col_descricao = colunas_itens.get("descricao")
     col_qtd = colunas_itens.get("qtd")
+    col_saldo_qtd = colunas_itens.get("saldo_qtd")
+    col_nao_faturado_qtd = colunas_itens.get("nao_faturado_qtd")
+    col_pre_nota_qtd = colunas_itens.get("pre_nota_qtd")
+
+    col_saldo = colunas_valores.get("saldo_cmv")
+    col_pre_nota = colunas_valores.get("pre_nota_cmv")
+    col_nao_faturado = colunas_valores.get("nao_faturado_cmv")
 
     for _, linha in grupo.iterrows():
         codigo = ""
         descricao = ""
         qtd = 0
+        saldo_qtd_item = 0
+        nao_faturado_qtd_item = 0
+        pre_nota_qtd_item = 0
+        saldo_item = 0
+        pre_nota_item = 0
+        nao_faturado_item = 0
 
         if col_codigo and col_codigo in linha.index:
             codigo = str(linha.get(col_codigo, "") or "").strip()
@@ -1133,11 +1210,35 @@ def montar_itens_do_pedido(grupo, colunas_itens):
         if col_qtd and col_qtd in linha.index:
             qtd = converter_numero(linha.get(col_qtd, 0))
 
-        if codigo or descricao or qtd:
+        if col_saldo_qtd and col_saldo_qtd in linha.index:
+            saldo_qtd_item = converter_numero(linha.get(col_saldo_qtd, 0))
+
+        if col_nao_faturado_qtd and col_nao_faturado_qtd in linha.index:
+            nao_faturado_qtd_item = converter_numero(linha.get(col_nao_faturado_qtd, 0))
+
+        if col_pre_nota_qtd and col_pre_nota_qtd in linha.index:
+            pre_nota_qtd_item = converter_numero(linha.get(col_pre_nota_qtd, 0))
+
+        if col_saldo and col_saldo in linha.index:
+            saldo_item = converter_numero(linha.get(col_saldo, 0))
+
+        if col_pre_nota and col_pre_nota in linha.index:
+            pre_nota_item = converter_numero(linha.get(col_pre_nota, 0))
+
+        if col_nao_faturado and col_nao_faturado in linha.index:
+            nao_faturado_item = converter_numero(linha.get(col_nao_faturado, 0))
+
+        if codigo or descricao or qtd or saldo_item or pre_nota_item or nao_faturado_item:
             itens.append({
                 "codigo": codigo,
                 "descricao": descricao,
                 "qtd": qtd,
+                "saldo_qtd_item": saldo_qtd_item,
+                "nao_faturado_qtd_item": nao_faturado_qtd_item,
+                "pre_nota_qtd_item": pre_nota_qtd_item,
+                "saldo_cmv_item": saldo_item,
+                "pre_nota_cmv_item": pre_nota_item,
+                "nao_faturado_cmv_item": nao_faturado_item,
             })
 
     return itens
@@ -1157,14 +1258,15 @@ def mapear_colunas_fixas(df):
         ]),
         "data_prev_entrega": encontrar_coluna_fixa(df, [
             "Data Prev Entrega", "Data Prev. Entrega", "Dt Prev Entrega",
-            "DT Prev Entrega", "Prev Entrega", "Previsão Entrega",
-            "Previsao Entrega", "Data Prevista Entrega", "Menor Data Prev Entrega"
+            "DT Prev Entrega", "Dt Prev Entr", "DT Prev Entr", "Prev Entrega",
+            "Previsão Entrega", "Previsao Entrega", "Data Prevista Entrega",
+            "Menor Data Prev Entrega"
         ]),
         "dt_agendamento": encontrar_coluna_fixa(df, [
             "DT Agendamento", "Dt Agendamento", "Data Agendamento",
             "Data Agendada", "DT Agendada", "Dt Agendada",
             "DT Agendando", "Dt Agendando", "Data Agendando",
-            "Agendamento", "Agendada", "Agendando", "Dt Agend"
+            "Agendamento", "Agendada", "Agendando", "Dt Agend", "DT Agend"
         ]),
         "saldo_cmv": encontrar_coluna_fixa(df, [
             "Saldo R$ (CMV)", "Saldo R CMV", "Saldo CMV"
@@ -1257,7 +1359,7 @@ def agregar_por_pedido(df, colunas):
     itens_por_pedido = {}
 
     for pedido, grupo in base_sem_agendamento.groupby("_pedido", dropna=False):
-        itens_por_pedido[pedido] = montar_itens_do_pedido(grupo, colunas_itens)
+        itens_por_pedido[pedido] = montar_itens_do_pedido(grupo, colunas_itens, colunas)
 
     agrupado["itens_json"] = agrupado["_pedido"].map(itens_por_pedido)
 
@@ -1754,7 +1856,9 @@ def configurar_colunas_e_processar(df, origem_texto):
         {"Campo usado": "Não Faturado CMV", "Coluna encontrada": colunas.get("nao_faturado_cmv")},
         {"Campo usado": "Código item", "Coluna encontrada": colunas_itens.get("codigo")},
         {"Campo usado": "Descrição item", "Coluna encontrada": colunas_itens.get("descricao")},
-        {"Campo usado": "Qtd item", "Coluna encontrada": colunas_itens.get("qtd")},
+        {"Campo usado": "Saldo QTD item", "Coluna encontrada": colunas_itens.get("saldo_qtd")},
+        {"Campo usado": "Não Faturado QTD item", "Coluna encontrada": colunas_itens.get("nao_faturado_qtd")},
+        {"Campo usado": "Pré-nota QTD item", "Coluna encontrada": colunas_itens.get("pre_nota_qtd")},
     ])
 
     st.dataframe(colunas_df, use_container_width=True, hide_index=True)
@@ -1877,7 +1981,7 @@ def configurar_colunas_e_processar(df, origem_texto):
 
 
 def montar_exportacao_acionar_comprador():
-    itens = buscar_docs(
+    pedidos = buscar_docs(
         ativos=True,
         status=STATUS_ACIONAR_COMPRADOR,
         campos=CAMPOS_PEDIDOS,
@@ -1886,7 +1990,7 @@ def montar_exportacao_acionar_comprador():
 
     linhas = []
 
-    for pedido in itens:
+    for pedido in pedidos:
         try:
             itens_pedido = json.loads(pedido.get("itens_json") or "[]")
         except Exception:
@@ -1904,6 +2008,12 @@ def montar_exportacao_acionar_comprador():
                 "codigo": "",
                 "descricao": "",
                 "qtd": pedido.get("qtd_itens", 0),
+                "saldo_qtd_item": pedido.get("qtd_itens", 0),
+                "nao_faturado_qtd_item": "",
+                "pre_nota_qtd_item": "",
+                "saldo_cmv_item": pedido.get("saldo_cmv", 0),
+                "pre_nota_cmv_item": pedido.get("pre_nota_cmv", 0),
+                "nao_faturado_cmv_item": pedido.get("nao_faturado_cmv", 0),
                 "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
                 "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
                 "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
@@ -1923,13 +2033,47 @@ def montar_exportacao_acionar_comprador():
                 "codigo": item.get("codigo", ""),
                 "descricao": item.get("descricao", ""),
                 "qtd": item.get("qtd", 0),
+                "saldo_qtd_item": item.get("saldo_qtd_item", 0),
+                "nao_faturado_qtd_item": item.get("nao_faturado_qtd_item", 0),
+                "pre_nota_qtd_item": item.get("pre_nota_qtd_item", 0),
+                "saldo_cmv_item": item.get("saldo_cmv_item", 0),
+                "pre_nota_cmv_item": item.get("pre_nota_cmv_item", 0),
+                "nao_faturado_cmv_item": item.get("nao_faturado_cmv_item", 0),
                 "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
                 "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
                 "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
                 "ultima_cobranca": pedido.get("ultima_cobranca", ""),
             })
 
-    return pd.DataFrame(linhas)
+    df = pd.DataFrame(linhas)
+
+    if not df.empty:
+        ordem = [
+            "pedido",
+            "analista",
+            "departamento",
+            "fornecedor",
+            "data_prev_entrega",
+            "status",
+            "cobrancas",
+            "codigo",
+            "descricao",
+            "qtd",
+            "saldo_qtd_item",
+            "nao_faturado_qtd_item",
+            "pre_nota_qtd_item",
+            "saldo_cmv_item",
+            "pre_nota_cmv_item",
+            "nao_faturado_cmv_item",
+            "saldo_cmv_pedido",
+            "pre_nota_cmv_pedido",
+            "nao_faturado_cmv_pedido",
+            "ultima_cobranca",
+        ]
+
+        df = df[[c for c in ordem if c in df.columns]]
+
+    return df
 
 
 def gerar_excel_bytes(df):
@@ -1947,7 +2091,7 @@ def tela_exportar_acionar_comprador():
 
     st.caption(
         "Exporta todos os pedidos ativos com status ACIONAR COMPRADOR, "
-        "trazendo itens, código, descrição e quantidade."
+        "trazendo os itens destrinchados com código, descrição, quantidade e valores por item."
     )
 
     df_export = montar_exportacao_acionar_comprador()
@@ -1977,16 +2121,6 @@ def tela_exportar_acionar_comprador():
         data=excel_bytes,
         file_name="acionar_comprador_itens.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-    csv = df_export.to_csv(index=False, sep=";").encode("utf-8-sig")
-
-    st.download_button(
-        "Baixar CSV - Acionar Comprador",
-        data=csv,
-        file_name="acionar_comprador_itens.csv",
-        mime="text/csv",
         use_container_width=True
     )
 
