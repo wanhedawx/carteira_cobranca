@@ -3,6 +3,8 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1 import ArrayUnion
+from google.api_core.retry import Retry
+from google.api_core.exceptions import RetryError, DeadlineExceeded, ServiceUnavailable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unicodedata import normalize
@@ -369,36 +371,65 @@ def salvar_em_lotes(operacoes):
 
 
 def buscar_docs(ativos=None):
-    col = db.collection(COLLECTION)
+    try:
+        col = db.collection(COLLECTION)
 
-    if ativos is True:
-        docs = col.where("ativo", "==", True).stream()
-    elif ativos is False:
-        docs = col.where("ativo", "==", False).stream()
-    else:
-        docs = col.stream()
+        retry_config = Retry(
+            initial=1.0,
+            maximum=10.0,
+            multiplier=2.0,
+            deadline=60.0
+        )
 
-    linhas = []
+        if ativos is True:
+            query = col.where("ativo", "==", True)
+        elif ativos is False:
+            query = col.where("ativo", "==", False)
+        else:
+            query = col
 
-    for d in docs:
-        item = d.to_dict()
-        item["doc_id"] = d.id
-        linhas.append(item)
+        docs = query.stream(
+            retry=retry_config,
+            timeout=60
+        )
 
-    return linhas
+        linhas = []
+
+        for d in docs:
+            item = d.to_dict()
+            item["doc_id"] = d.id
+            linhas.append(item)
+
+        return linhas
+
+    except (RetryError, DeadlineExceeded, ServiceUnavailable):
+        st.error("Não consegui consultar o Firebase agora. Tente novamente em alguns segundos.")
+        st.info("Se continuar, abra o Streamlit Cloud > Manage app > Logs para ver o erro completo do Firebase.")
+        st.stop()
+
+    except Exception as e:
+        st.error("Erro ao consultar o Firebase.")
+        st.write(str(e))
+        st.stop()
 
 
 def buscar_doc(doc_id):
-    ref = db.collection(COLLECTION).document(doc_id)
-    snap = ref.get()
+    try:
+        ref = db.collection(COLLECTION).document(doc_id)
+        snap = ref.get(timeout=60)
 
-    if not snap.exists:
-        return None
+        if not snap.exists:
+            return None
 
-    dados = snap.to_dict()
-    dados["doc_id"] = snap.id
+        dados = snap.to_dict()
+        dados["doc_id"] = snap.id
 
-    return dados
+        return dados
+
+    except Exception as e:
+        st.error("Erro ao buscar o pedido no Firebase.")
+        st.write(str(e))
+        st.stop()
 
 
 def registrar_cobranca(doc_id, usuario, observacao):
@@ -1335,32 +1366,38 @@ st.title("📋 Cobrança de Carteira")
 st.caption("Controle de pedidos atrasados por analista, departamento, comprador e status de cobrança.")
 
 if usuario_logado == "Admin":
-    aba_upload, aba_geral, aba_fora, aba_cancelados, aba_regras = st.tabs([
-        "Atualizar", "Carteira Geral", "Fora do Atraso", "Retirados da Conta", "Regras"
-    ])
+    pagina = st.radio(
+        "Menu",
+        ["Atualizar", "Carteira Geral", "Fora do Atraso", "Retirados da Conta", "Regras"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
 
-    with aba_upload:
+    if pagina == "Atualizar":
         tela_upload()
 
-    with aba_geral:
+    elif pagina == "Carteira Geral":
         tela_carteira()
 
-    with aba_fora:
+    elif pagina == "Fora do Atraso":
         tela_fora_atraso()
 
-    with aba_cancelados:
+    elif pagina == "Retirados da Conta":
         tela_cancelados()
 
-    with aba_regras:
+    elif pagina == "Regras":
         tela_regras()
 
 else:
-    aba_minha, aba_regras = st.tabs([
-        "Minha Carteira", "Regras"
-    ])
+    pagina = st.radio(
+        "Menu",
+        ["Minha Carteira", "Regras"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
 
-    with aba_minha:
+    if pagina == "Minha Carteira":
         tela_carteira(usuario_logado)
 
-    with aba_regras:
+    elif pagina == "Regras":
         tela_regras()
