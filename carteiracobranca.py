@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text, bindparam
-from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unicodedata import normalize
@@ -470,7 +469,7 @@ def campos_sql(campos=None):
     return campos
 
 
-def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=100000):
+def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=5000):
     campos = campos_sql(campos)
     select_cols = ", ".join(campos)
 
@@ -1025,7 +1024,7 @@ def processar_carteira(df, usuario):
     ativos_anteriores = buscar_docs(
         ativos=True,
         campos=["doc_id", "pedido", "analista"],
-        tamanho_lote=100000
+        tamanho_lote=5000
     )
 
     data_proc = agora_str()
@@ -1532,7 +1531,7 @@ def tela_carteira(analista=None):
         ativos=True,
         analista=analista,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100000
+        tamanho_lote=5000
     )
 
     df = montar_df_itens(itens)
@@ -1556,7 +1555,8 @@ def tela_carteira(analista=None):
     st.dataframe(
         formatar_df_moeda(df_tela),
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        height=420
     )
 
     df_csv = df_filtrado.drop(columns=["doc_id"], errors="ignore")
@@ -1572,84 +1572,103 @@ def tela_carteira(analista=None):
         use_container_width=True
     )
 
-    st.subheader("Ações de cobrança")
+    st.divider()
+    st.subheader("Ação de cobrança")
 
-    for _, linha in df_filtrado.iterrows():
-        doc_id = linha["doc_id"]
-        status = linha.get("status", STATUS_PENDENTE)
-        cobrancas = int(linha.get("cobrancas", 0) or 0)
+    if df_filtrado.empty:
+        st.info("Nenhum pedido encontrado com os filtros.")
+        return
 
-        with st.expander(
-            f"Pedido {linha.get('pedido', '-')} | "
-            f"Menor data {linha.get('dt_agendada', '-')} | "
-            f"{linha.get('departamento', '-')} | "
-            f"{linha.get('fornecedor', '-')}"
+    df_filtrado = df_filtrado.copy()
+
+    df_filtrado["opcao_pedido"] = (
+        df_filtrado["pedido"].astype(str)
+        + " | "
+        + df_filtrado["dt_agendada"].astype(str)
+        + " | "
+        + df_filtrado["departamento"].astype(str)
+        + " | "
+        + df_filtrado["fornecedor"].astype(str)
+    )
+
+    opcao = st.selectbox(
+        "Selecione um pedido para cobrar",
+        df_filtrado["opcao_pedido"].tolist(),
+        key=f"pedido_acao_{analista or 'geral'}"
+    )
+
+    linha = df_filtrado[df_filtrado["opcao_pedido"] == opcao].iloc[0]
+
+    doc_id = linha["doc_id"]
+    status = linha.get("status", STATUS_PENDENTE)
+    cobrancas = int(linha.get("cobrancas", 0) or 0)
+
+    st.markdown(
+        f"""
+        <div class="card">
+            <b>Pedido:</b> {linha.get('pedido', '-')}<br>
+            <b>Status:</b> {badge(status)}<br>
+            <b>Analista:</b> {linha.get('analista', '-')}<br>
+            <b>Departamento:</b> {linha.get('departamento', '-')}<br>
+            <b>Menor Data Prev Entrega:</b> {linha.get('dt_agendada', '-') or '-'}<br>
+            <b>Fornecedor:</b> {linha.get('fornecedor', '-') or '-'}<br>
+            <b>Qtd. itens do pedido sem agendamento:</b> {linha.get('qtd_itens', 0)}<br>
+            <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
+            <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
+            <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
+            <b>Cobranças:</b> {cobrancas}<br>
+            <b>Última cobrança:</b> {linha.get('ultima_cobranca', '') or '-'}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    obs = st.text_area(
+        "Observação da cobrança",
+        key=f"obs_{doc_id}",
+        placeholder="Ex.: cobrado fornecedor por e-mail/WhatsApp, retorno previsto..."
+    )
+
+    col_a, col_b = st.columns(2)
+
+    if cobrancas == 2 and status != STATUS_COMPRADOR_ACIONADO:
+        st.warning("A próxima cobrança será a 3ª. Pela regra, o comprador deve ser acionado.")
+
+    with col_a:
+        if st.button(
+            "Registrar cobrança",
+            key=f"cobrar_{doc_id}",
+            use_container_width=True
         ):
-            st.markdown(
-                f"""
-                <div class="card">
-                    <b>Status:</b> {badge(status)}<br>
-                    <b>Analista:</b> {linha.get('analista', '-')}<br>
-                    <b>Departamento:</b> {linha.get('departamento', '-')}<br>
-                    <b>Menor Data Prev Entrega:</b> {linha.get('dt_agendada', '-') or '-'}<br>
-                    <b>Fornecedor:</b> {linha.get('fornecedor', '-') or '-'}<br>
-                    <b>Qtd. itens do pedido sem agendamento:</b> {linha.get('qtd_itens', 0)}<br>
-                    <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
-                    <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
-                    <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
-                    <b>Cobranças:</b> {cobrancas}<br>
-                    <b>Última cobrança:</b> {linha.get('ultima_cobranca', '') or '-'}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            registrar_cobranca(doc_id, usuario_logado, obs)
+            st.success("Cobrança registrada.")
+            st.rerun()
 
-            obs = st.text_area(
-                "Observação da cobrança",
-                key=f"obs_{doc_id}",
-                placeholder="Ex.: cobrado fornecedor por e-mail/WhatsApp, retorno previsto..."
-            )
+    with col_b:
+        desabilitar = (
+            status not in [STATUS_ACIONAR_COMPRADOR, STATUS_COMPRADOR_ACIONADO]
+            and cobrancas < 3
+        )
 
-            col_a, col_b = st.columns(2)
+        if st.button(
+            "Marcar comprador acionado",
+            key=f"comprador_{doc_id}",
+            use_container_width=True,
+            disabled=desabilitar
+        ):
+            marcar_comprador_acionado(doc_id, usuario_logado, obs)
+            st.success("Comprador acionado registrado.")
+            st.rerun()
 
-            if cobrancas == 2 and status != STATUS_COMPRADOR_ACIONADO:
-                st.warning("A próxima cobrança será a 3ª. Pela regra, o comprador deve ser acionado.")
+    if st.button("Carregar histórico", key=f"historico_{doc_id}"):
+        historico = historico_doc(doc_id)
 
-            with col_a:
-                if st.button(
-                    "Registrar cobrança",
-                    key=f"cobrar_{doc_id}",
-                    use_container_width=True
-                ):
-                    registrar_cobranca(doc_id, usuario_logado, obs)
-                    st.success("Cobrança registrada.")
-                    st.rerun()
-
-            with col_b:
-                desabilitar = (
-                    status not in [STATUS_ACIONAR_COMPRADOR, STATUS_COMPRADOR_ACIONADO]
-                    and cobrancas < 3
-                )
-
-                if st.button(
-                    "Marcar comprador acionado",
-                    key=f"comprador_{doc_id}",
-                    use_container_width=True,
-                    disabled=desabilitar
-                ):
-                    marcar_comprador_acionado(doc_id, usuario_logado, obs)
-                    st.success("Comprador acionado registrado.")
-                    st.rerun()
-
-            if st.button("Carregar histórico", key=f"historico_{doc_id}"):
-                historico = historico_doc(doc_id)
-
-                if historico:
-                    hist_df = pd.DataFrame(historico)
-                    st.caption("Histórico")
-                    st.dataframe(hist_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Sem histórico para este pedido.")
+        if historico:
+            hist_df = pd.DataFrame(historico)
+            st.caption("Histórico")
+            st.dataframe(hist_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sem histórico para este pedido.")
 
 
 def tela_fora_atraso():
@@ -1659,7 +1678,7 @@ def tela_fora_atraso():
         ativos=False,
         status=STATUS_FORA_ATRASO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100000
+        tamanho_lote=5000
     )
 
     df = montar_df_itens(itens)
@@ -1675,7 +1694,8 @@ def tela_fora_atraso():
     st.dataframe(
         formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        height=520
     )
 
 
@@ -1686,7 +1706,7 @@ def tela_cancelados():
         ativos=False,
         status=STATUS_CANCELADO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=100000
+        tamanho_lote=5000
     )
 
     df = montar_df_itens(itens)
@@ -1702,7 +1722,8 @@ def tela_cancelados():
     st.dataframe(
         formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        height=520
     )
 
 
