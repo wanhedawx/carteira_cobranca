@@ -7,6 +7,7 @@ from unicodedata import normalize
 import hashlib
 import io
 import re
+import json
 
 # =========================
 # CONFIGURAÇÕES
@@ -57,6 +58,9 @@ COLUNAS_MOEDA = [
     "saldo_cmv",
     "pre_nota_cmv",
     "nao_faturado_cmv",
+    "saldo_cmv_pedido",
+    "pre_nota_cmv_pedido",
+    "nao_faturado_cmv_pedido",
 ]
 
 CAMPOS_PEDIDOS = [
@@ -82,6 +86,7 @@ CAMPOS_PEDIDOS = [
     "data_cancelamento",
     "criado_em",
     "atualizado_em",
+    "itens_json",
 ]
 
 CAMPOS_LISTAGEM = [
@@ -291,10 +296,7 @@ def status_por_cobranca(qtd, comprador_acionado=False):
     if qtd == 1:
         return STATUS_COBRADO_1
 
-    if qtd == 2:
-        return STATUS_COBRADO_2
-
-    return STATUS_ACIONAR_COMPRADOR
+    return STATUS_COBRADO_2
 
 
 def classe_status(status):
@@ -435,7 +437,8 @@ def inicializar_banco():
         data_ultimo_upload text,
         data_cancelamento text,
         criado_em text,
-        atualizado_em text
+        atualizado_em text,
+        itens_json text default '[]'
     );
 
     create table if not exists carteira_historico (
@@ -449,6 +452,9 @@ def inicializar_banco():
         cobranca_numero integer,
         status_apos text
     );
+
+    alter table carteira_pedidos
+    add column if not exists itens_json text default '[]';
 
     create index if not exists idx_carteira_ativo_analista
     on carteira_pedidos (ativo, analista);
@@ -615,6 +621,15 @@ def montar_linha_banco(dados):
     linha["cobrancas"] = int(linha.get("cobrancas") or 0)
     linha["comprador_acionado"] = bool(linha.get("comprador_acionado"))
 
+    itens = linha.get("itens_json", [])
+
+    if isinstance(itens, (list, dict)):
+        linha["itens_json"] = json.dumps(itens, ensure_ascii=False)
+    elif itens is None or str(itens).strip() == "":
+        linha["itens_json"] = "[]"
+    else:
+        linha["itens_json"] = str(itens)
+
     for campo in CAMPOS_PEDIDOS:
         if linha[campo] is None:
             if campo in ["saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv"]:
@@ -623,6 +638,8 @@ def montar_linha_banco(dados):
                 linha[campo] = 0
             elif campo in ["ativo", "comprador_acionado"]:
                 linha[campo] = False
+            elif campo == "itens_json":
+                linha[campo] = "[]"
             else:
                 linha[campo] = ""
 
@@ -636,7 +653,7 @@ UPSERT_PEDIDO_SQL = text("""
         saldo_cmv, pre_nota_cmv, nao_faturado_cmv, qtd_itens,
         ativo, status, cobrancas, comprador_acionado,
         ultima_cobranca, data_primeira_entrada, data_ultimo_upload,
-        data_cancelamento, criado_em, atualizado_em
+        data_cancelamento, criado_em, atualizado_em, itens_json
     )
     values (
         :doc_id, :pedido, :analista, :departamento, :departamento_norm, :fornecedor,
@@ -644,7 +661,7 @@ UPSERT_PEDIDO_SQL = text("""
         :saldo_cmv, :pre_nota_cmv, :nao_faturado_cmv, :qtd_itens,
         :ativo, :status, :cobrancas, :comprador_acionado,
         :ultima_cobranca, :data_primeira_entrada, :data_ultimo_upload,
-        :data_cancelamento, :criado_em, :atualizado_em
+        :data_cancelamento, :criado_em, :atualizado_em, :itens_json
     )
     on conflict (doc_id) do update set
         pedido = excluded.pedido,
@@ -667,7 +684,8 @@ UPSERT_PEDIDO_SQL = text("""
         data_ultimo_upload = excluded.data_ultimo_upload,
         data_cancelamento = excluded.data_cancelamento,
         criado_em = coalesce(carteira_pedidos.criado_em, excluded.criado_em),
-        atualizado_em = excluded.atualizado_em
+        atualizado_em = excluded.atualizado_em,
+        itens_json = excluded.itens_json
 """)
 
 
@@ -695,117 +713,6 @@ UPDATE_INATIVO_SQL = text("""
 # =========================
 # AÇÕES NO BANCO
 # =========================
-def registrar_cobranca(doc_id, usuario, observacao):
-    item = buscar_doc(doc_id)
-
-    if not item:
-        st.error("Pedido não encontrado.")
-        return
-
-    atual = int(item.get("cobrancas", 0) or 0)
-    nova_qtd = atual + 1
-    comprador_acionado = bool(item.get("comprador_acionado", False))
-    novo_status = status_por_cobranca(nova_qtd, comprador_acionado)
-    data_evento = agora_str()
-
-    evento = {
-        "doc_id": doc_id,
-        "pedido": item.get("pedido", ""),
-        "tipo": "COBRANCA",
-        "data": data_evento,
-        "usuario": usuario,
-        "observacao": observacao or "",
-        "cobranca_numero": nova_qtd,
-        "status_apos": novo_status,
-    }
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    update carteira_pedidos
-                    set
-                        cobrancas = :cobrancas,
-                        status = :status,
-                        ultima_cobranca = :ultima_cobranca,
-                        atualizado_em = :atualizado_em
-                    where doc_id = :doc_id
-                """),
-                {
-                    "doc_id": doc_id,
-                    "cobrancas": nova_qtd,
-                    "status": novo_status,
-                    "ultima_cobranca": data_evento,
-                    "atualizado_em": data_evento,
-                }
-            )
-
-            conn.execute(INSERT_HISTORICO_SQL, evento)
-
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
-
-    except Exception as e:
-        st.error("Erro ao registrar cobrança.")
-        with st.expander("Ver detalhe técnico"):
-            st.code(repr(e))
-        st.stop()
-
-
-def marcar_comprador_acionado(doc_id, usuario, observacao):
-    item = buscar_doc(doc_id)
-
-    if not item:
-        st.error("Pedido não encontrado.")
-        return
-
-    data_evento = agora_str()
-
-    evento = {
-        "doc_id": doc_id,
-        "pedido": item.get("pedido", ""),
-        "tipo": "COMPRADOR_ACIONADO",
-        "data": data_evento,
-        "usuario": usuario,
-        "observacao": observacao or "",
-        "cobranca_numero": None,
-        "status_apos": STATUS_COMPRADOR_ACIONADO,
-    }
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    update carteira_pedidos
-                    set
-                        comprador_acionado = true,
-                        status = :status,
-                        atualizado_em = :atualizado_em
-                    where doc_id = :doc_id
-                """),
-                {
-                    "doc_id": doc_id,
-                    "status": STATUS_COMPRADOR_ACIONADO,
-                    "atualizado_em": data_evento,
-                }
-            )
-
-            conn.execute(INSERT_HISTORICO_SQL, evento)
-
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
-
-    except Exception as e:
-        st.error("Erro ao marcar comprador acionado.")
-        with st.expander("Ver detalhe técnico"):
-            st.code(repr(e))
-        st.stop()
-
-
 def registrar_cobranca_lote(doc_ids, usuario, observacao):
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
 
@@ -985,6 +892,95 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
         st.stop()
 
 
+def sinalizar_acionar_comprador_lote(doc_ids, usuario, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return
+
+    itens = buscar_docs_por_ids(
+        ids,
+        campos=[
+            "doc_id",
+            "pedido",
+            "cobrancas",
+            "status",
+        ]
+    )
+
+    if not itens:
+        st.error("Nenhum pedido encontrado.")
+        return
+
+    data_evento = agora_str()
+    updates = []
+    historicos = []
+    ignorados = []
+
+    for item in itens:
+        doc_id = item["doc_id"]
+        cobrancas = int(item.get("cobrancas", 0) or 0)
+        status_atual = item.get("status", "")
+
+        if cobrancas < 2 and status_atual != STATUS_ACIONAR_COMPRADOR:
+            ignorados.append(item.get("pedido", doc_id))
+            continue
+
+        updates.append({
+            "doc_id": doc_id,
+            "status": STATUS_ACIONAR_COMPRADOR,
+            "atualizado_em": data_evento,
+        })
+
+        historicos.append({
+            "doc_id": doc_id,
+            "pedido": item.get("pedido", ""),
+            "tipo": "NECESSARIO_ACIONAR_COMPRADOR",
+            "data": data_evento,
+            "usuario": usuario,
+            "observacao": observacao or "Após 2 cobranças sem retorno, necessário acionar comprador.",
+            "cobranca_numero": cobrancas,
+            "status_apos": STATUS_ACIONAR_COMPRADOR,
+        })
+
+    if not updates:
+        st.warning("Nenhum pedido estava com 2 cobranças para acionar comprador.")
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        status = :status,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                updates
+            )
+
+            conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        if ignorados:
+            st.warning(
+                "Pedidos ignorados porque ainda não têm 2 cobranças: "
+                + ", ".join(str(x) for x in ignorados[:20])
+            )
+
+    except Exception as e:
+        st.error("Erro ao sinalizar comprador.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
 def marcar_comprador_acionado_lote(doc_ids, usuario, observacao):
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
 
@@ -1093,6 +1089,60 @@ def encontrar_coluna_fixa(df, nomes_possiveis):
     return None
 
 
+def encontrar_colunas_itens(df):
+    return {
+        "codigo": encontrar_coluna_fixa(df, [
+            "Código", "Codigo", "Cód Produto", "Cod Produto",
+            "Código Produto", "Codigo Produto", "Cód. Produto",
+            "Cod. Produto", "Código Item", "Codigo Item",
+            "SKU", "Item", "Cod Item", "Cód Item"
+        ]),
+        "descricao": encontrar_coluna_fixa(df, [
+            "Descrição", "Descricao", "Descrição Produto",
+            "Descricao Produto", "Produto", "Nome Produto",
+            "Desc Produto", "Desc Item", "Mercadoria",
+            "Descrição Item", "Descricao Item"
+        ]),
+        "qtd": encontrar_coluna_fixa(df, [
+            "Qtd", "QTD", "Quantidade", "Qtde",
+            "Qtd Pedida", "QTD Pedido", "Saldo QTD",
+            "Saldo Quantidade", "Não Faturado QTD",
+            "Nao Faturado QTD", "Pré-nota QTD", "Pre-nota QTD"
+        ]),
+    }
+
+
+def montar_itens_do_pedido(grupo, colunas_itens):
+    itens = []
+
+    col_codigo = colunas_itens.get("codigo")
+    col_descricao = colunas_itens.get("descricao")
+    col_qtd = colunas_itens.get("qtd")
+
+    for _, linha in grupo.iterrows():
+        codigo = ""
+        descricao = ""
+        qtd = 0
+
+        if col_codigo and col_codigo in linha.index:
+            codigo = str(linha.get(col_codigo, "") or "").strip()
+
+        if col_descricao and col_descricao in linha.index:
+            descricao = str(linha.get(col_descricao, "") or "").strip()
+
+        if col_qtd and col_qtd in linha.index:
+            qtd = converter_numero(linha.get(col_qtd, 0))
+
+        if codigo or descricao or qtd:
+            itens.append({
+                "codigo": codigo,
+                "descricao": descricao,
+                "qtd": qtd,
+            })
+
+    return itens
+
+
 def mapear_colunas_fixas(df):
     colunas = {
         "pedido": encontrar_coluna_fixa(df, [
@@ -1114,7 +1164,7 @@ def mapear_colunas_fixas(df):
             "DT Agendamento", "Dt Agendamento", "Data Agendamento",
             "Data Agendada", "DT Agendada", "Dt Agendada",
             "DT Agendando", "Dt Agendando", "Data Agendando",
-            "Agendamento", "Agendada", "Agendando"
+            "Agendamento", "Agendada", "Agendando", "Dt Agend"
         ]),
         "saldo_cmv": encontrar_coluna_fixa(df, [
             "Saldo R$ (CMV)", "Saldo R CMV", "Saldo CMV"
@@ -1141,6 +1191,7 @@ def mapear_colunas_fixas(df):
 
 def agregar_por_pedido(df, colunas):
     base = df.copy()
+    colunas_itens = encontrar_colunas_itens(df)
 
     base["_pedido"] = base[colunas["pedido"]].astype(str).str.strip()
     base["_departamento"] = base[colunas["departamento"]]
@@ -1180,7 +1231,8 @@ def agregar_por_pedido(df, colunas):
     if base_sem_agendamento.empty:
         agrupado = pd.DataFrame(columns=[
             "_pedido", "departamento", "fornecedor", "menor_data_prev_entrega",
-            "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "qtd_itens"
+            "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "qtd_itens",
+            "itens_json"
         ])
 
         agrupado.attrs["retirados_agendamento"] = retirados_agendamento
@@ -1201,6 +1253,13 @@ def agregar_por_pedido(df, colunas):
         nao_faturado_cmv=("_nao_faturado_cmv", "sum"),
         qtd_itens=("_pedido", "size")
     ).reset_index()
+
+    itens_por_pedido = {}
+
+    for pedido, grupo in base_sem_agendamento.groupby("_pedido", dropna=False):
+        itens_por_pedido[pedido] = montar_itens_do_pedido(grupo, colunas_itens)
+
+    agrupado["itens_json"] = agrupado["_pedido"].map(itens_por_pedido)
 
     agrupado.attrs["retirados_agendamento"] = retirados_agendamento
     agrupado.attrs["ids_arquivo_completo"] = ids_arquivo_completo
@@ -1253,6 +1312,7 @@ def preparar_linhas(df):
             "pre_nota_cmv": float(row["pre_nota_cmv"] or 0),
             "nao_faturado_cmv": float(row["nao_faturado_cmv"] or 0),
             "qtd_itens": int(row["qtd_itens"] or 0),
+            "itens_json": row.get("itens_json", []),
         }
 
         linhas_todas.append(item)
@@ -1324,6 +1384,9 @@ def processar_carteira(df, usuario):
             qtd = int(existente.get("cobrancas", 0) or 0)
             comprador_acionado = bool(existente.get("comprador_acionado", False))
             status = status_por_cobranca(qtd, comprador_acionado)
+
+            if existente.get("status") == STATUS_ACIONAR_COMPRADOR:
+                status = STATUS_ACIONAR_COMPRADOR
 
             dados = {
                 **item,
@@ -1616,23 +1679,29 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
         tokens = extrair_pedidos_texto(busca)
 
         if tokens:
-            def linha_match(linha):
-                pedido_n = norm(linha.get("pedido", ""))
-                texto_linha = norm(" ".join(str(v) for v in linha.values))
+            pedidos_normalizados = df["pedido"].apply(norm) if "pedido" in df.columns else pd.Series([], dtype=str)
+            df_exato = df[pedidos_normalizados.isin(tokens)]
 
-                for token in tokens:
-                    if token == pedido_n:
-                        return True
+            if not df_exato.empty:
+                df = df_exato
+            else:
+                def linha_match(linha):
+                    pedido_n = norm(linha.get("pedido", ""))
+                    texto_linha = norm(" ".join(str(v) for v in linha.values))
 
-                    if token in pedido_n:
-                        return True
+                    for token in tokens:
+                        if token == pedido_n:
+                            return True
 
-                    if token in texto_linha:
-                        return True
+                        if token in pedido_n:
+                            return True
 
-                return False
+                        if token in texto_linha:
+                            return True
 
-            df = df[df.apply(linha_match, axis=1)]
+                    return False
+
+                df = df[df.apply(linha_match, axis=1)]
 
     return df
 
@@ -1672,6 +1741,8 @@ def configurar_colunas_e_processar(df, origem_texto):
 
     st.subheader("Colunas identificadas automaticamente")
 
+    colunas_itens = encontrar_colunas_itens(df)
+
     colunas_df = pd.DataFrame([
         {"Campo usado": "Pedido", "Coluna encontrada": colunas.get("pedido")},
         {"Campo usado": "Departamento", "Coluna encontrada": colunas.get("departamento")},
@@ -1681,6 +1752,9 @@ def configurar_colunas_e_processar(df, origem_texto):
         {"Campo usado": "Saldo CMV", "Coluna encontrada": colunas.get("saldo_cmv")},
         {"Campo usado": "Pré-nota CMV", "Coluna encontrada": colunas.get("pre_nota_cmv")},
         {"Campo usado": "Não Faturado CMV", "Coluna encontrada": colunas.get("nao_faturado_cmv")},
+        {"Campo usado": "Código item", "Coluna encontrada": colunas_itens.get("codigo")},
+        {"Campo usado": "Descrição item", "Coluna encontrada": colunas_itens.get("descricao")},
+        {"Campo usado": "Qtd item", "Coluna encontrada": colunas_itens.get("qtd")},
     ])
 
     st.dataframe(colunas_df, use_container_width=True, hide_index=True)
@@ -1802,6 +1876,121 @@ def configurar_colunas_e_processar(df, origem_texto):
         c11.metric("Reativados", resultado["reativados"])
 
 
+def montar_exportacao_acionar_comprador():
+    itens = buscar_docs(
+        ativos=True,
+        status=STATUS_ACIONAR_COMPRADOR,
+        campos=CAMPOS_PEDIDOS,
+        tamanho_lote=10000
+    )
+
+    linhas = []
+
+    for pedido in itens:
+        try:
+            itens_pedido = json.loads(pedido.get("itens_json") or "[]")
+        except Exception:
+            itens_pedido = []
+
+        if not itens_pedido:
+            linhas.append({
+                "pedido": pedido.get("pedido", ""),
+                "analista": pedido.get("analista", ""),
+                "departamento": pedido.get("departamento", ""),
+                "fornecedor": pedido.get("fornecedor", ""),
+                "data_prev_entrega": pedido.get("dt_agendada", ""),
+                "status": pedido.get("status", ""),
+                "cobrancas": pedido.get("cobrancas", 0),
+                "codigo": "",
+                "descricao": "",
+                "qtd": pedido.get("qtd_itens", 0),
+                "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
+                "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
+                "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
+                "ultima_cobranca": pedido.get("ultima_cobranca", ""),
+            })
+            continue
+
+        for item in itens_pedido:
+            linhas.append({
+                "pedido": pedido.get("pedido", ""),
+                "analista": pedido.get("analista", ""),
+                "departamento": pedido.get("departamento", ""),
+                "fornecedor": pedido.get("fornecedor", ""),
+                "data_prev_entrega": pedido.get("dt_agendada", ""),
+                "status": pedido.get("status", ""),
+                "cobrancas": pedido.get("cobrancas", 0),
+                "codigo": item.get("codigo", ""),
+                "descricao": item.get("descricao", ""),
+                "qtd": item.get("qtd", 0),
+                "saldo_cmv_pedido": pedido.get("saldo_cmv", 0),
+                "pre_nota_cmv_pedido": pedido.get("pre_nota_cmv", 0),
+                "nao_faturado_cmv_pedido": pedido.get("nao_faturado_cmv", 0),
+                "ultima_cobranca": pedido.get("ultima_cobranca", ""),
+            })
+
+    return pd.DataFrame(linhas)
+
+
+def gerar_excel_bytes(df):
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Acionar Comprador")
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def tela_exportar_acionar_comprador():
+    st.header("📣 Exportar Acionar Comprador")
+
+    st.caption(
+        "Exporta todos os pedidos ativos com status ACIONAR COMPRADOR, "
+        "trazendo itens, código, descrição e quantidade."
+    )
+
+    df_export = montar_exportacao_acionar_comprador()
+
+    if df_export.empty:
+        st.info("Nenhum pedido com status ACIONAR COMPRADOR no momento.")
+        return
+
+    df_pedidos_unicos = df_export.drop_duplicates(subset=["pedido"])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Linhas de itens", len(df_export))
+    c2.metric("Pedidos", df_export["pedido"].nunique())
+    c3.metric("Saldo CMV", formatar_moeda(df_pedidos_unicos["saldo_cmv_pedido"].sum()))
+
+    st.dataframe(
+        formatar_df_moeda(df_export),
+        use_container_width=True,
+        hide_index=True,
+        height=520
+    )
+
+    excel_bytes = gerar_excel_bytes(df_export)
+
+    st.download_button(
+        "Baixar Excel - Acionar Comprador",
+        data=excel_bytes,
+        file_name="acionar_comprador_itens.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+    csv = df_export.to_csv(index=False, sep=";").encode("utf-8-sig")
+
+    st.download_button(
+        "Baixar CSV - Acionar Comprador",
+        data=csv,
+        file_name="acionar_comprador_itens.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+
 def tela_upload():
     st.header("📤 Atualizar carteira")
 
@@ -1851,7 +2040,11 @@ def tela_carteira(analista=None):
 
     st.subheader("Pedidos em atraso para cobrar")
 
-    df_tela = df_filtrado.drop(columns=["doc_id"], errors="ignore")
+    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_tela.rename(columns={
+        "dt_agendada": "data_prev_entrega",
+        "qtd_itens": "qtd_itens_sem_agendamento",
+    })
 
     st.dataframe(
         formatar_df_moeda(df_tela),
@@ -1860,7 +2053,7 @@ def tela_carteira(analista=None):
         height=420
     )
 
-    df_csv = df_filtrado.drop(columns=["doc_id"], errors="ignore")
+    df_csv = df_tela.copy()
     df_csv = formatar_df_moeda(df_csv)
 
     csv = df_csv.to_csv(index=False, sep=";").encode("utf-8-sig")
@@ -1966,8 +2159,13 @@ def tela_carteira(analista=None):
 
     colunas_acao = [c for c in colunas_acao if c in df_acao.columns]
 
+    df_acao_tela = df_acao[colunas_acao].copy()
+    df_acao_tela = df_acao_tela.rename(columns={
+        "dt_agendada": "data_prev_entrega",
+    })
+
     st.dataframe(
-        formatar_df_moeda(df_acao[colunas_acao]),
+        formatar_df_moeda(df_acao_tela),
         use_container_width=True,
         hide_index=True,
         height=260
@@ -1987,55 +2185,80 @@ def tela_carteira(analista=None):
 
     doc_ids = df_acao["doc_id"].dropna().tolist()
 
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
+
+    tem_2_cobrancas = False
+    tem_menos_de_2 = False
+    tem_acionar = False
+    tem_cobranca_para_excluir = False
+
+    for _, linha in df_acao.iterrows():
+        cobrancas = int(linha.get("cobrancas", 0) or 0)
+        status_linha = linha.get("status", "")
+
+        if cobrancas >= 2:
+            tem_2_cobrancas = True
+
+        if cobrancas < 2:
+            tem_menos_de_2 = True
+
+        if status_linha == STATUS_ACIONAR_COMPRADOR:
+            tem_acionar = True
+
+        if cobrancas > 0:
+            tem_cobranca_para_excluir = True
 
     with col_a:
         if st.button(
-            "Registrar cobrança em lote",
+            "Registrar cobrança",
             key=f"cobrar_lote_{analista or 'geral'}",
-            use_container_width=True
+            use_container_width=True,
+            disabled=not tem_menos_de_2
         ):
-            registrar_cobranca_lote(doc_ids, usuario_logado, obs)
-            st.success(f"Cobrança registrada para {len(doc_ids)} pedido(s).")
+            doc_ids_cobranca = df_acao[
+                df_acao["cobrancas"].fillna(0).astype(int) < 2
+            ]["doc_id"].dropna().tolist()
+
+            registrar_cobranca_lote(doc_ids_cobranca, usuario_logado, obs)
+            st.success(f"Cobrança registrada para {len(doc_ids_cobranca)} pedido(s).")
             st.rerun()
 
     with col_b:
-        pode_acionar = True
-
-        for _, linha in df_acao.iterrows():
-            cobrancas = int(linha.get("cobrancas", 0) or 0)
-            status = linha.get("status", "")
-
-            if cobrancas < 3 and status not in [STATUS_ACIONAR_COMPRADOR, STATUS_COMPRADOR_ACIONADO]:
-                pode_acionar = False
-
-        if not pode_acionar:
-            st.caption("Para marcar comprador acionado em lote, todos os pedidos precisam estar na 3ª cobrança ou no status Acionar Comprador.")
-
         if st.button(
-            "Marcar comprador acionado",
-            key=f"comprador_lote_{analista or 'geral'}",
+            "Necessário acionar comprador",
+            key=f"necessario_comprador_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not pode_acionar
+            disabled=not tem_2_cobrancas
         ):
-            marcar_comprador_acionado_lote(doc_ids, usuario_logado, obs)
-            st.success(f"Comprador acionado registrado para {len(doc_ids)} pedido(s).")
+            doc_ids_comprador = df_acao[
+                df_acao["cobrancas"].fillna(0).astype(int) >= 2
+            ]["doc_id"].dropna().tolist()
+
+            sinalizar_acionar_comprador_lote(doc_ids_comprador, usuario_logado, obs)
+            st.success("Pedidos sinalizados para acionar comprador.")
             st.rerun()
 
     with col_c:
-        pode_excluir = False
+        if st.button(
+            "Comprador acionado",
+            key=f"comprador_lote_{analista or 'geral'}",
+            use_container_width=True,
+            disabled=not tem_acionar
+        ):
+            doc_ids_acionar = df_acao[
+                df_acao["status"] == STATUS_ACIONAR_COMPRADOR
+            ]["doc_id"].dropna().tolist()
 
-        for _, linha in df_acao.iterrows():
-            cobrancas = int(linha.get("cobrancas", 0) or 0)
+            marcar_comprador_acionado_lote(doc_ids_acionar, usuario_logado, obs)
+            st.success(f"Comprador acionado registrado para {len(doc_ids_acionar)} pedido(s).")
+            st.rerun()
 
-            if cobrancas > 0:
-                pode_excluir = True
-
+    with col_d:
         if st.button(
             "Excluir última cobrança",
             key=f"excluir_cobranca_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not pode_excluir
+            disabled=not tem_cobranca_para_excluir
         ):
             excluir_ultima_cobranca_lote(doc_ids, usuario_logado, obs)
             st.success("Última cobrança excluída dos pedidos selecionados quando aplicável.")
@@ -2075,8 +2298,14 @@ def tela_fora_atraso():
 
     st.metric("Fora do atraso", len(df_filtrado))
 
+    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_tela.rename(columns={
+        "dt_agendada": "data_prev_entrega",
+        "qtd_itens": "qtd_itens_sem_agendamento",
+    })
+
     st.dataframe(
-        formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
+        formatar_df_moeda(df_tela),
         use_container_width=True,
         hide_index=True,
         height=520
@@ -2103,8 +2332,14 @@ def tela_cancelados():
 
     st.metric("Retirados da conta", len(df_filtrado))
 
+    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_tela.rename(columns={
+        "dt_agendada": "data_prev_entrega",
+        "qtd_itens": "qtd_itens_sem_agendamento",
+    })
+
     st.dataframe(
-        formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
+        formatar_df_moeda(df_tela),
         use_container_width=True,
         hide_index=True,
         height=520
@@ -2122,6 +2357,13 @@ def tela_regras():
     st.write("5. Se o pedido sumir do arquivo completo, ele será retirado da cobrança e da contagem.")
     st.write("6. Não existe regra de marcar como entregue.")
 
+    st.subheader("Fluxo de cobrança")
+    st.write("1. Pedido atrasado entra como PENDENTE.")
+    st.write("2. Registrar cobrança uma vez: status COBRADO 1X.")
+    st.write("3. Registrar cobrança duas vezes: status COBRADO 2X.")
+    st.write("4. Se cobrou 2x e não respondeu, clicar em NECESSÁRIO ACIONAR COMPRADOR.")
+    st.write("5. Depois que falar com o comprador, clicar em COMPRADOR ACIONADO.")
+
     st.subheader("Valores considerados")
     st.write("Saldo CMV = Pré-nota CMV + Não Faturado CMV.")
     st.write("Os valores são considerados apenas dos produtos que ficaram sem DT Agendamento.")
@@ -2130,13 +2372,6 @@ def tela_regras():
 
     for analista, deps in ANALISTAS.items():
         st.markdown(f"**{analista}**: {', '.join(deps)}")
-
-    st.subheader("Regra da cobrança manual")
-    st.write("1. Pedido atrasado entrou na carteira: fica como pendente.")
-    st.write("2. Clicou em registrar cobrança 1 vez: status Cobrado 1x.")
-    st.write("3. Clicou em registrar cobrança 2 vezes: status Cobrado 2x.")
-    st.write("4. Na 3ª cobrança: status muda para Acionar Comprador.")
-    st.write("5. Quando o comprador for acionado, marque no sistema.")
 
 
 # =========================
@@ -2148,7 +2383,7 @@ st.caption("Controle de pedidos atrasados por analista, departamento, comprador 
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Fora do Atraso", "Retirados da Conta", "Regras"],
+        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Fora do Atraso", "Retirados da Conta", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -2158,6 +2393,9 @@ if usuario_logado == "Admin":
 
     elif pagina == "Carteira Geral":
         tela_carteira()
+
+    elif pagina == "Exportar Comprador":
+        tela_exportar_acionar_comprador()
 
     elif pagina == "Fora do Atraso":
         tela_fora_atraso()
