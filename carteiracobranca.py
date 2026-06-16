@@ -1,9 +1,7 @@
 import streamlit as st
 import pandas as pd
-import firebase_admin
-from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1 import ArrayUnion
-from google.api_core.retry import Retry
+from sqlalchemy import create_engine, text, bindparam
+from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unicodedata import normalize
@@ -20,9 +18,6 @@ st.set_page_config(
 )
 
 TZ = ZoneInfo("America/Maceio")
-COLLECTION = "carteira_cobranca"
-COLLECTION_CACHE = "carteira_cobranca_cache"
-CACHE_CHUNK_SIZE = 100
 
 ANALISTAS = {
     "Cleviton": [
@@ -64,7 +59,33 @@ COLUNAS_MOEDA = [
     "nao_faturado_cmv",
 ]
 
+CAMPOS_PEDIDOS = [
+    "doc_id",
+    "pedido",
+    "analista",
+    "departamento",
+    "departamento_norm",
+    "fornecedor",
+    "dt_agendada",
+    "dt_agendada_ordem",
+    "saldo_cmv",
+    "pre_nota_cmv",
+    "nao_faturado_cmv",
+    "qtd_itens",
+    "ativo",
+    "status",
+    "cobrancas",
+    "comprador_acionado",
+    "ultima_cobranca",
+    "data_primeira_entrada",
+    "data_ultimo_upload",
+    "data_cancelamento",
+    "criado_em",
+    "atualizado_em",
+]
+
 CAMPOS_LISTAGEM = [
+    "doc_id",
     "pedido",
     "analista",
     "departamento",
@@ -82,8 +103,6 @@ CAMPOS_LISTAGEM = [
     "data_ultimo_upload",
     "data_cancelamento",
     "ativo",
-    "analista_ativo_key",
-    "status_ativo_key",
 ]
 
 # =========================
@@ -174,20 +193,6 @@ def norm(txt):
 def hash_id(*partes):
     texto = "|".join(norm(p) for p in partes if str(p).strip() != "")
     return hashlib.sha1(texto.encode("utf-8")).hexdigest()[:24]
-
-
-def chave_analista_ativo(analista, ativo=True):
-    return f"{norm(analista)}|{'1' if ativo else '0'}"
-
-
-def chave_status_ativo(status, ativo=True):
-    return f"{norm(status)}|{'1' if ativo else '0'}"
-
-
-def cache_key(nome):
-    nome = nome or "GERAL"
-    chave = norm(nome).replace(" ", "_")
-    return chave or "GERAL"
 
 
 def converter_data(valor):
@@ -363,378 +368,314 @@ def menor_data(series):
 
     return min(datas)
 
+
 # =========================
-# FIREBASE
+# NEON / POSTGRES
 # =========================
 @st.cache_resource
-def conectar_firestore():
-    if not firebase_admin._apps:
-        if "firebase" not in st.secrets:
-            st.error("Firebase não configurado. Coloque as credenciais em Secrets do Streamlit.")
-            st.stop()
+def conectar_banco():
+    if "neon" not in st.secrets or "database_url" not in st.secrets["neon"]:
+        st.error("Neon não configurado. Coloque [neon] database_url nos Secrets do Streamlit.")
+        st.stop()
 
-        cred_dict = dict(st.secrets["firebase"])
+    database_url = st.secrets["neon"]["database_url"]
 
-        if "private_key" in cred_dict:
-            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-
-    return firestore.client()
-
-
-db = conectar_firestore()
-
-
-def retry_config():
-    return Retry(
-        initial=1.0,
-        maximum=10.0,
-        multiplier=2.0,
-        deadline=60.0
+    return create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
     )
 
 
-def salvar_em_lotes(operacoes):
-    batch = db.batch()
-    contador = 0
-
-    for op, ref, dados, merge in operacoes:
-        if op == "set":
-            batch.set(ref, dados, merge=bool(merge))
-        elif op == "update":
-            batch.update(ref, dados)
-
-        contador += 1
-
-        if contador >= 450:
-            batch.commit(retry=retry_config(), timeout=60)
-            batch = db.batch()
-            contador = 0
-
-    if contador:
-        batch.commit(retry=retry_config(), timeout=60)
+engine = conectar_banco()
 
 
-def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=1000):
+def inicializar_banco():
+    sql = """
+    create table if not exists carteira_pedidos (
+        doc_id text primary key,
+        pedido text,
+        analista text,
+        departamento text,
+        departamento_norm text,
+        fornecedor text,
+        dt_agendada text,
+        dt_agendada_ordem text,
+        saldo_cmv numeric default 0,
+        pre_nota_cmv numeric default 0,
+        nao_faturado_cmv numeric default 0,
+        qtd_itens integer default 0,
+        ativo boolean default true,
+        status text,
+        cobrancas integer default 0,
+        comprador_acionado boolean default false,
+        ultima_cobranca text,
+        data_primeira_entrada text,
+        data_ultimo_upload text,
+        data_cancelamento text,
+        criado_em text,
+        atualizado_em text
+    );
+
+    create table if not exists carteira_historico (
+        id bigserial primary key,
+        doc_id text references carteira_pedidos(doc_id) on delete cascade,
+        pedido text,
+        tipo text,
+        data text,
+        usuario text,
+        observacao text,
+        cobranca_numero integer,
+        status_apos text
+    );
+
+    create index if not exists idx_carteira_ativo_analista
+    on carteira_pedidos (ativo, analista);
+
+    create index if not exists idx_carteira_status
+    on carteira_pedidos (status);
+
+    create index if not exists idx_carteira_dt
+    on carteira_pedidos (dt_agendada_ordem);
+
+    create index if not exists idx_historico_doc
+    on carteira_historico (doc_id);
+    """
+
     try:
-        col = db.collection(COLLECTION)
-        query_base = col
-
-        if analista and ativos is True:
-            query_base = query_base.where(
-                "analista_ativo_key",
-                "==",
-                chave_analista_ativo(analista, True)
-            )
-
-        elif status and ativos is False:
-            query_base = query_base.where(
-                "status_ativo_key",
-                "==",
-                chave_status_ativo(status, False)
-            )
-
-        elif analista:
-            query_base = query_base.where("analista", "==", analista)
-
-        elif status:
-            query_base = query_base.where("status", "==", status)
-
-        elif ativos is True:
-            query_base = query_base.where("ativo", "==", True)
-
-        elif ativos is False:
-            query_base = query_base.where("ativo", "==", False)
-
-        if campos:
-            query_base = query_base.select(campos)
-
-        docs = list(
-            query_base.limit(tamanho_lote).stream(
-                retry=retry_config(),
-                timeout=30
-            )
-        )
-
-        linhas = []
-
-        for d in docs:
-            item = d.to_dict()
-            item["doc_id"] = d.id
-
-            if ativos is True and item.get("ativo") is not True:
-                continue
-
-            if ativos is False and item.get("ativo") is not False:
-                continue
-
-            if analista and item.get("analista") != analista:
-                continue
-
-            if status and item.get("status") != status:
-                continue
-
-            linhas.append(item)
-
-        return linhas
-
+        with engine.begin() as conn:
+            conn.execute(text(sql))
     except Exception as e:
-        st.error("Não consegui consultar o Firebase agora.")
-        st.info("A consulta principal deu timeout. As telas dos analistas usam cache após o Admin processar a carteira.")
-        with st.expander("Ver detalhe técnico do erro"):
+        st.error("Erro ao criar/verificar as tabelas no Neon.")
+        with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
 
 
-def buscar_docs_por_ids(doc_ids, tamanho_lote=100, campos=None):
+inicializar_banco()
+
+
+def campos_sql(campos=None):
+    if not campos:
+        campos = CAMPOS_PEDIDOS.copy()
+    else:
+        campos = [c for c in campos if c in CAMPOS_PEDIDOS]
+
+    if "doc_id" not in campos:
+        campos = ["doc_id"] + campos
+
+    return campos
+
+
+def buscar_docs(ativos=None, analista=None, status=None, campos=None, tamanho_lote=100000):
+    campos = campos_sql(campos)
+    select_cols = ", ".join(campos)
+
+    sql = f"""
+        select {select_cols}
+        from carteira_pedidos
+        where 1 = 1
+    """
+
+    params = {}
+
+    if ativos is not None:
+        sql += " and ativo = :ativo"
+        params["ativo"] = bool(ativos)
+
+    if analista:
+        sql += " and analista = :analista"
+        params["analista"] = analista
+
+    if status:
+        sql += " and status = :status"
+        params["status"] = status
+
+    sql += """
+        order by analista, departamento, dt_agendada_ordem, pedido
+        limit :limite
+    """
+    params["limite"] = int(tamanho_lote)
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        st.error("Não consegui consultar o Neon agora.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def buscar_docs_por_ids(doc_ids, campos=None, tamanho_lote=500):
     ids = list(dict.fromkeys(list(doc_ids)))
 
     if not ids:
         return []
 
-    linhas = []
+    campos = campos_sql(campos)
+    select_cols = ", ".join(campos)
+
+    resultado = []
+
+    sql = text(f"""
+        select {select_cols}
+        from carteira_pedidos
+        where doc_id in :ids
+    """).bindparams(bindparam("ids", expanding=True))
 
     try:
-        for i in range(0, len(ids), tamanho_lote):
-            lote_ids = ids[i:i + tamanho_lote]
-            refs = [
-                db.collection(COLLECTION).document(doc_id)
-                for doc_id in lote_ids
-            ]
+        with engine.begin() as conn:
+            for i in range(0, len(ids), tamanho_lote):
+                lote = ids[i:i + tamanho_lote]
+                rows = conn.execute(sql, {"ids": lote}).mappings().all()
+                resultado.extend([dict(r) for r in rows])
 
-            try:
-                snaps = list(
-                    db.get_all(
-                        refs,
-                        field_paths=campos,
-                        retry=retry_config(),
-                        timeout=60
-                    )
-                )
-
-                for snap in snaps:
-                    if snap.exists:
-                        item = snap.to_dict()
-                        item["doc_id"] = snap.id
-                        linhas.append(item)
-
-            except Exception:
-                for ref in refs:
-                    try:
-                        snap = ref.get(
-                            field_paths=campos,
-                            retry=retry_config(),
-                            timeout=30
-                        )
-
-                        if snap.exists:
-                            item = snap.to_dict()
-                            item["doc_id"] = snap.id
-                            linhas.append(item)
-
-                    except Exception:
-                        continue
-
-        return linhas
+        return resultado
 
     except Exception as e:
-        st.error("Não consegui buscar os pedidos no Firebase agora.")
-        with st.expander("Ver detalhe técnico do erro"):
+        st.error("Não consegui buscar os pedidos no Neon.")
+        with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
 
 
 def buscar_doc(doc_id):
     try:
-        ref = db.collection(COLLECTION).document(doc_id)
-        snap = ref.get(retry=retry_config(), timeout=60)
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("select * from carteira_pedidos where doc_id = :doc_id"),
+                {"doc_id": doc_id}
+            ).mappings().first()
 
-        if not snap.exists:
-            return None
-
-        dados = snap.to_dict()
-        dados["doc_id"] = snap.id
-
-        return dados
+            return dict(row) if row else None
 
     except Exception as e:
-        st.error("Erro ao buscar o pedido no Firebase.")
-        with st.expander("Ver detalhe técnico do erro"):
+        st.error("Erro ao buscar o pedido no Neon.")
+        with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
 
 
-# =========================
-# CACHE LEVE DOS ANALISTAS
-# =========================
-def salvar_cache_ativo(linhas_ativas):
-    grupos = {"GERAL": list(linhas_ativas)}
-
-    for analista in ANALISTAS.keys():
-        grupos[analista] = []
-
-    grupos["SEM ANALISTA"] = []
-
-    for item in linhas_ativas:
-        analista = item.get("analista", "SEM ANALISTA") or "SEM ANALISTA"
-        grupos.setdefault(analista, [])
-        grupos[analista].append(item)
-
-    operacoes = []
-    data_proc = agora_str()
-
-    for nome_grupo, itens in grupos.items():
-        chave = cache_key(nome_grupo)
-        chunks = [
-            itens[i:i + CACHE_CHUNK_SIZE]
-            for i in range(0, len(itens), CACHE_CHUNK_SIZE)
-        ]
-
-        meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
-
-        operacoes.append((
-            "set",
-            meta_ref,
-            {
-                "tipo": "ativos",
-                "grupo": nome_grupo,
-                "total": len(itens),
-                "chunks": len(chunks),
-                "atualizado_em": data_proc,
-            },
-            False
-        ))
-
-        for idx, chunk in enumerate(chunks):
-            chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
-
-            operacoes.append((
-                "set",
-                chunk_ref,
-                {
-                    "tipo": "ativos_chunk",
-                    "grupo": nome_grupo,
-                    "chunk": idx,
-                    "itens": chunk,
-                    "atualizado_em": data_proc,
-                },
-                False
-            ))
-
-    salvar_em_lotes(operacoes)
-
-
-def carregar_cache_ativo(analista=None):
-    nome_grupo = analista or "GERAL"
-    chave = cache_key(nome_grupo)
-
+def historico_doc(doc_id):
     try:
-        meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
-        meta = meta_ref.get(timeout=20)
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text("""
+                    select tipo, data, usuario, observacao, cobranca_numero, status_apos
+                    from carteira_historico
+                    where doc_id = :doc_id
+                    order by data desc, id desc
+                """),
+                {"doc_id": doc_id}
+            ).mappings().all()
 
-        if not meta.exists:
-            return []
-
-        meta_dados = meta.to_dict()
-        total_chunks = int(meta_dados.get("chunks", 0) or 0)
-
-        itens = []
-
-        for idx in range(total_chunks):
-            chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
-            chunk_snap = chunk_ref.get(timeout=20)
-
-            if chunk_snap.exists:
-                chunk_dados = chunk_snap.to_dict()
-                itens.extend(chunk_dados.get("itens", []))
-
-        return itens
+            return [dict(r) for r in rows]
 
     except Exception as e:
-        st.error("Não consegui carregar a carteira em cache.")
-        st.info("Entre como Admin, envie a carteira e clique em Processar carteira novamente para recriar o cache dos analistas.")
-        with st.expander("Ver detalhe técnico do erro"):
+        st.error("Erro ao carregar histórico.")
+        with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
 
 
-def carregar_ativos_anteriores_do_cache():
-    itens = carregar_cache_ativo(None)
+def montar_linha_banco(dados):
+    linha = {}
 
-    ativos = []
+    for campo in CAMPOS_PEDIDOS:
+        linha[campo] = dados.get(campo)
 
-    for item in itens:
-        doc_id = item.get("doc_id")
+    linha["saldo_cmv"] = float(linha.get("saldo_cmv") or 0)
+    linha["pre_nota_cmv"] = float(linha.get("pre_nota_cmv") or 0)
+    linha["nao_faturado_cmv"] = float(linha.get("nao_faturado_cmv") or 0)
+    linha["qtd_itens"] = int(linha.get("qtd_itens") or 0)
+    linha["ativo"] = bool(linha.get("ativo"))
+    linha["cobrancas"] = int(linha.get("cobrancas") or 0)
+    linha["comprador_acionado"] = bool(linha.get("comprador_acionado"))
 
-        if doc_id:
-            ativos.append({
-                "doc_id": doc_id,
-                "ativo": True,
-                "analista": item.get("analista", ""),
-            })
+    for campo in CAMPOS_PEDIDOS:
+        if linha[campo] is None:
+            if campo in ["saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv"]:
+                linha[campo] = 0
+            elif campo in ["qtd_itens", "cobrancas"]:
+                linha[campo] = 0
+            elif campo in ["ativo", "comprador_acionado"]:
+                linha[campo] = False
+            else:
+                linha[campo] = ""
 
-    return ativos
+    return linha
 
 
-def atualizar_item_no_cache(doc_id, atualizacoes):
-    try:
-        item_base = buscar_doc(doc_id)
+UPSERT_PEDIDO_SQL = text("""
+    insert into carteira_pedidos (
+        doc_id, pedido, analista, departamento, departamento_norm, fornecedor,
+        dt_agendada, dt_agendada_ordem,
+        saldo_cmv, pre_nota_cmv, nao_faturado_cmv, qtd_itens,
+        ativo, status, cobrancas, comprador_acionado,
+        ultima_cobranca, data_primeira_entrada, data_ultimo_upload,
+        data_cancelamento, criado_em, atualizado_em
+    )
+    values (
+        :doc_id, :pedido, :analista, :departamento, :departamento_norm, :fornecedor,
+        :dt_agendada, :dt_agendada_ordem,
+        :saldo_cmv, :pre_nota_cmv, :nao_faturado_cmv, :qtd_itens,
+        :ativo, :status, :cobrancas, :comprador_acionado,
+        :ultima_cobranca, :data_primeira_entrada, :data_ultimo_upload,
+        :data_cancelamento, :criado_em, :atualizado_em
+    )
+    on conflict (doc_id) do update set
+        pedido = excluded.pedido,
+        analista = excluded.analista,
+        departamento = excluded.departamento,
+        departamento_norm = excluded.departamento_norm,
+        fornecedor = excluded.fornecedor,
+        dt_agendada = excluded.dt_agendada,
+        dt_agendada_ordem = excluded.dt_agendada_ordem,
+        saldo_cmv = excluded.saldo_cmv,
+        pre_nota_cmv = excluded.pre_nota_cmv,
+        nao_faturado_cmv = excluded.nao_faturado_cmv,
+        qtd_itens = excluded.qtd_itens,
+        ativo = excluded.ativo,
+        status = excluded.status,
+        cobrancas = excluded.cobrancas,
+        comprador_acionado = excluded.comprador_acionado,
+        ultima_cobranca = excluded.ultima_cobranca,
+        data_primeira_entrada = coalesce(carteira_pedidos.data_primeira_entrada, excluded.data_primeira_entrada),
+        data_ultimo_upload = excluded.data_ultimo_upload,
+        data_cancelamento = excluded.data_cancelamento,
+        criado_em = coalesce(carteira_pedidos.criado_em, excluded.criado_em),
+        atualizado_em = excluded.atualizado_em
+""")
 
-        if not item_base:
-            return
 
-        analista = item_base.get("analista", "")
+INSERT_HISTORICO_SQL = text("""
+    insert into carteira_historico (
+        doc_id, pedido, tipo, data, usuario, observacao, cobranca_numero, status_apos
+    )
+    values (
+        :doc_id, :pedido, :tipo, :data, :usuario, :observacao, :cobranca_numero, :status_apos
+    )
+""")
 
-        for nome_grupo in ["GERAL", analista]:
-            if not nome_grupo:
-                continue
 
-            chave = cache_key(nome_grupo)
-
-            meta_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}")
-            meta = meta_ref.get(timeout=20)
-
-            if not meta.exists:
-                continue
-
-            meta_dados = meta.to_dict()
-            total_chunks = int(meta_dados.get("chunks", 0) or 0)
-
-            for idx in range(total_chunks):
-                chunk_ref = db.collection(COLLECTION_CACHE).document(f"ativos_{chave}_{idx}")
-                chunk_snap = chunk_ref.get(timeout=20)
-
-                if not chunk_snap.exists:
-                    continue
-
-                chunk_dados = chunk_snap.to_dict()
-                itens = chunk_dados.get("itens", [])
-
-                alterou = False
-
-                for item in itens:
-                    if item.get("doc_id") == doc_id:
-                        item.update(atualizacoes)
-                        alterou = True
-
-                if alterou:
-                    chunk_ref.set(
-                        {
-                            **chunk_dados,
-                            "itens": itens,
-                            "atualizado_em": agora_str(),
-                        },
-                        merge=False
-                    )
-
-    except Exception:
-        pass
+UPDATE_INATIVO_SQL = text("""
+    update carteira_pedidos
+    set
+        ativo = false,
+        status = :status,
+        data_cancelamento = coalesce(:data_cancelamento, data_cancelamento),
+        atualizado_em = :atualizado_em
+    where doc_id = :doc_id
+""")
 
 
 # =========================
-# AÇÕES
+# AÇÕES NO BANCO
 # =========================
 def registrar_cobranca(doc_id, usuario, observacao):
     item = buscar_doc(doc_id)
@@ -750,6 +691,8 @@ def registrar_cobranca(doc_id, usuario, observacao):
     data_evento = agora_str()
 
     evento = {
+        "doc_id": doc_id,
+        "pedido": item.get("pedido", ""),
         "tipo": "COBRANCA",
         "data": data_evento,
         "usuario": usuario,
@@ -758,57 +701,81 @@ def registrar_cobranca(doc_id, usuario, observacao):
         "status_apos": novo_status,
     }
 
-    analista = item.get("analista", "")
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        cobrancas = :cobrancas,
+                        status = :status,
+                        ultima_cobranca = :ultima_cobranca,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                {
+                    "doc_id": doc_id,
+                    "cobrancas": nova_qtd,
+                    "status": novo_status,
+                    "ultima_cobranca": data_evento,
+                    "atualizado_em": data_evento,
+                }
+            )
 
-    db.collection(COLLECTION).document(doc_id).update(
-        {
-            "cobrancas": nova_qtd,
-            "status": novo_status,
-            "ultima_cobranca": data_evento,
-            "status_ativo_key": chave_status_ativo(novo_status, True),
-            "analista_ativo_key": chave_analista_ativo(analista, True),
-            "historico": ArrayUnion([evento])
-        },
-        retry=retry_config(),
-        timeout=60
-    )
+            conn.execute(INSERT_HISTORICO_SQL, evento)
 
-    atualizar_item_no_cache(doc_id, {
-        "cobrancas": nova_qtd,
-        "status": novo_status,
-        "ultima_cobranca": data_evento,
-    })
+    except Exception as e:
+        st.error("Erro ao registrar cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
 
 
 def marcar_comprador_acionado(doc_id, usuario, observacao):
     item = buscar_doc(doc_id)
-    analista = item.get("analista", "") if item else ""
+
+    if not item:
+        st.error("Pedido não encontrado.")
+        return
+
     data_evento = agora_str()
 
     evento = {
+        "doc_id": doc_id,
+        "pedido": item.get("pedido", ""),
         "tipo": "COMPRADOR_ACIONADO",
         "data": data_evento,
         "usuario": usuario,
         "observacao": observacao or "",
+        "cobranca_numero": None,
+        "status_apos": STATUS_COMPRADOR_ACIONADO,
     }
 
-    db.collection(COLLECTION).document(doc_id).update(
-        {
-            "comprador_acionado": True,
-            "status": STATUS_COMPRADOR_ACIONADO,
-            "data_comprador_acionado": data_evento,
-            "status_ativo_key": chave_status_ativo(STATUS_COMPRADOR_ACIONADO, True),
-            "analista_ativo_key": chave_analista_ativo(analista, True),
-            "historico": ArrayUnion([evento])
-        },
-        retry=retry_config(),
-        timeout=60
-    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        comprador_acionado = true,
+                        status = :status,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                {
+                    "doc_id": doc_id,
+                    "status": STATUS_COMPRADOR_ACIONADO,
+                    "atualizado_em": data_evento,
+                }
+            )
 
-    atualizar_item_no_cache(doc_id, {
-        "comprador_acionado": True,
-        "status": STATUS_COMPRADOR_ACIONADO,
-    })
+            conn.execute(INSERT_HISTORICO_SQL, evento)
+
+    except Exception as e:
+        st.error("Erro ao marcar comprador acionado.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
 
 
 # =========================
@@ -1041,27 +1008,37 @@ def processar_carteira(df, usuario):
     existentes_lista = buscar_docs_por_ids(
         ids_cobranca,
         campos=[
+            "doc_id",
             "ativo",
             "status",
             "cobrancas",
             "comprador_acionado",
             "analista",
+            "data_primeira_entrada",
+            "criado_em",
+            "ultima_cobranca",
         ]
     )
+
     existentes = {x["doc_id"]: x for x in existentes_lista}
 
-    ativos_anteriores = carregar_ativos_anteriores_do_cache()
+    ativos_anteriores = buscar_docs(
+        ativos=True,
+        campos=["doc_id", "pedido", "analista"],
+        tamanho_lote=100000
+    )
 
     data_proc = agora_str()
-    operacoes = []
-    cache_linhas_ativas = []
+
+    pedidos_para_salvar = []
+    historicos = []
+    inativos = []
 
     novos = 0
     reativados = 0
     mantidos = 0
 
     for item in linhas_cobranca:
-        ref = db.collection(COLLECTION).document(item["doc_id"])
         existente = existentes.get(item["doc_id"])
 
         if existente:
@@ -1075,33 +1052,31 @@ def processar_carteira(df, usuario):
                 "status": status,
                 "cobrancas": qtd,
                 "comprador_acionado": comprador_acionado,
+                "data_primeira_entrada": existente.get("data_primeira_entrada") or data_proc,
                 "data_ultimo_upload": data_proc,
+                "ultima_cobranca": existente.get("ultima_cobranca") or "",
+                "data_cancelamento": "",
+                "criado_em": existente.get("criado_em") or data_proc,
                 "atualizado_em": data_proc,
-                "analista_ativo_key": chave_analista_ativo(item["analista"], True),
-                "status_ativo_key": chave_status_ativo(status, True),
             }
 
             if existente.get("ativo") is True:
                 mantidos += 1
             else:
                 reativados += 1
-                dados["historico"] = ArrayUnion([{
+
+                historicos.append({
+                    "doc_id": item["doc_id"],
+                    "pedido": item["pedido"],
                     "tipo": "RETORNO_PARA_COBRANCA",
                     "data": data_proc,
                     "usuario": usuario,
-                    "observacao": "Pedido voltou para cobrança por estar em atraso e sem DT Agendamento."
-                }])
+                    "observacao": "Pedido voltou para cobrança por estar em atraso e sem DT Agendamento.",
+                    "cobranca_numero": None,
+                    "status_apos": status,
+                })
 
-            operacoes.append(("set", ref, dados, True))
-
-            cache_linhas_ativas.append({
-                **item,
-                "ativo": True,
-                "status": status,
-                "cobrancas": qtd,
-                "comprador_acionado": comprador_acionado,
-                "data_ultimo_upload": data_proc,
-            })
+            pedidos_para_salvar.append(montar_linha_banco(dados))
 
         else:
             novos += 1
@@ -1112,34 +1087,25 @@ def processar_carteira(df, usuario):
                 "status": STATUS_PENDENTE,
                 "cobrancas": 0,
                 "comprador_acionado": False,
-                "analista_ativo_key": chave_analista_ativo(item["analista"], True),
-                "status_ativo_key": chave_status_ativo(STATUS_PENDENTE, True),
                 "data_primeira_entrada": data_proc,
                 "data_ultimo_upload": data_proc,
                 "ultima_cobranca": "",
                 "data_cancelamento": "",
                 "criado_em": data_proc,
                 "atualizado_em": data_proc,
-                "historico": [{
-                    "tipo": "ENTRADA_CARTEIRA",
-                    "data": data_proc,
-                    "usuario": usuario,
-                    "observacao": "Pedido entrou na carteira de cobrança por estar em atraso e sem DT Agendamento."
-                }]
             }
 
-            operacoes.append(("set", ref, dados, True))
+            pedidos_para_salvar.append(montar_linha_banco(dados))
 
-            cache_linhas_ativas.append({
-                **item,
-                "ativo": True,
-                "status": STATUS_PENDENTE,
-                "cobrancas": 0,
-                "comprador_acionado": False,
-                "data_primeira_entrada": data_proc,
-                "data_ultimo_upload": data_proc,
-                "ultima_cobranca": "",
-                "data_cancelamento": "",
+            historicos.append({
+                "doc_id": item["doc_id"],
+                "pedido": item["pedido"],
+                "tipo": "ENTRADA_CARTEIRA",
+                "data": data_proc,
+                "usuario": usuario,
+                "observacao": "Pedido entrou na carteira de cobrança por estar em atraso e sem DT Agendamento.",
+                "cobranca_numero": None,
+                "status_apos": STATUS_PENDENTE,
             })
 
     cancelados = 0
@@ -1152,76 +1118,61 @@ def processar_carteira(df, usuario):
         if doc_id in ids_cobranca:
             continue
 
-        ref = db.collection(COLLECTION).document(doc_id)
-        analista_item = item.get("analista", "")
-
         if doc_id not in ids_arquivo_completo:
             cancelados += 1
-
-            evento = {
-                "tipo": "CANCELADO_RETIRADO",
-                "data": data_proc,
-                "usuario": usuario,
-                "observacao": "Pedido saiu do arquivo completo. Retirado da cobrança e da contagem."
-            }
-
-            dados = {
-                "ativo": False,
-                "status": STATUS_CANCELADO,
-                "data_cancelamento": data_proc,
-                "atualizado_em": data_proc,
-                "analista_ativo_key": chave_analista_ativo(analista_item, False),
-                "status_ativo_key": chave_status_ativo(STATUS_CANCELADO, False),
-                "historico": ArrayUnion([evento])
-            }
-
-            operacoes.append(("update", ref, dados, None))
+            status = STATUS_CANCELADO
+            obs = "Pedido saiu do arquivo completo. Retirado da cobrança e da contagem."
+            tipo = "CANCELADO_RETIRADO"
+            data_cancelamento = data_proc
 
         elif doc_id not in ids_sem_agendamento:
             com_agendamento += 1
-
-            evento = {
-                "tipo": "COM_AGENDAMENTO",
-                "data": data_proc,
-                "usuario": usuario,
-                "observacao": "Pedido está no arquivo, mas possui DT Agendamento preenchida. Retirado da cobrança."
-            }
-
-            dados = {
-                "ativo": False,
-                "status": STATUS_COM_AGENDAMENTO,
-                "atualizado_em": data_proc,
-                "analista_ativo_key": chave_analista_ativo(analista_item, False),
-                "status_ativo_key": chave_status_ativo(STATUS_COM_AGENDAMENTO, False),
-                "historico": ArrayUnion([evento])
-            }
-
-            operacoes.append(("update", ref, dados, None))
+            status = STATUS_COM_AGENDAMENTO
+            obs = "Pedido está no arquivo, mas possui DT Agendamento preenchida. Retirado da cobrança."
+            tipo = "COM_AGENDAMENTO"
+            data_cancelamento = None
 
         else:
             fora_atraso += 1
+            status = STATUS_FORA_ATRASO
+            obs = "Pedido está sem DT Agendamento, mas não está em atraso pela menor Data Prev Entrega. Retirado da cobrança."
+            tipo = "FORA_DO_ATRASO"
+            data_cancelamento = None
 
-            evento = {
-                "tipo": "FORA_DO_ATRASO",
-                "data": data_proc,
-                "usuario": usuario,
-                "observacao": "Pedido está sem DT Agendamento, mas não está em atraso pela menor Data Prev Entrega. Retirado da cobrança."
-            }
+        inativos.append({
+            "doc_id": doc_id,
+            "status": status,
+            "data_cancelamento": data_cancelamento,
+            "atualizado_em": data_proc,
+        })
 
-            dados = {
-                "ativo": False,
-                "status": STATUS_FORA_ATRASO,
-                "atualizado_em": data_proc,
-                "analista_ativo_key": chave_analista_ativo(analista_item, False),
-                "status_ativo_key": chave_status_ativo(STATUS_FORA_ATRASO, False),
-                "historico": ArrayUnion([evento])
-            }
+        historicos.append({
+            "doc_id": doc_id,
+            "pedido": item.get("pedido", ""),
+            "tipo": tipo,
+            "data": data_proc,
+            "usuario": usuario,
+            "observacao": obs,
+            "cobranca_numero": None,
+            "status_apos": status,
+        })
 
-            operacoes.append(("update", ref, dados, None))
+    try:
+        with engine.begin() as conn:
+            if pedidos_para_salvar:
+                conn.execute(UPSERT_PEDIDO_SQL, pedidos_para_salvar)
 
-    salvar_em_lotes(operacoes)
+            if inativos:
+                conn.execute(UPDATE_INATIVO_SQL, inativos)
 
-    salvar_cache_ativo(cache_linhas_ativas)
+            if historicos:
+                conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+    except Exception as e:
+        st.error("Erro ao processar carteira no Neon.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
 
     return {
         "erro": False,
@@ -1247,8 +1198,9 @@ def processar_carteira(df, usuario):
 # =========================
 def senha_valida(usuario, senha):
     if "app_passwords" in st.secrets:
+        senhas = dict(st.secrets["app_passwords"])
         key = "admin" if usuario == "Admin" else usuario.lower()
-        return senha == st.secrets["app_passwords"].get(key, "")
+        return senha == senhas.get(key, "")
 
     return senha == "1234"
 
@@ -1528,7 +1480,7 @@ def configurar_colunas_e_processar(df, origem_texto):
                 st.write(a)
             st.stop()
 
-        st.success("Carteira processada com sucesso! Cache dos analistas atualizado.")
+        st.success("Carteira processada com sucesso no Neon!")
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Pedidos no arquivo", resultado["total_arquivo"])
@@ -1576,7 +1528,12 @@ def tela_carteira(analista=None):
     st.info(f"Data limite da cobrança hoje: **{data_br(data_limite_cobranca())}**")
     st.caption("Aparecem aqui somente pedidos sem DT Agendamento e com Data Prev Entrega em atraso.")
 
-    itens = carregar_cache_ativo(analista)
+    itens = buscar_docs(
+        ativos=True,
+        analista=analista,
+        campos=CAMPOS_LISTAGEM,
+        tamanho_lote=100000
+    )
 
     df = montar_df_itens(itens)
 
@@ -1685,11 +1642,10 @@ def tela_carteira(analista=None):
                     st.rerun()
 
             if st.button("Carregar histórico", key=f"historico_{doc_id}"):
-                item_completo = buscar_doc(doc_id)
-                historico = item_completo.get("historico", []) if item_completo else []
+                historico = historico_doc(doc_id)
 
                 if historico:
-                    hist_df = pd.DataFrame(historico).sort_values("data", ascending=False)
+                    hist_df = pd.DataFrame(historico)
                     st.caption("Histórico")
                     st.dataframe(hist_df, use_container_width=True, hide_index=True)
                 else:
@@ -1703,16 +1659,10 @@ def tela_fora_atraso():
         ativos=False,
         status=STATUS_FORA_ATRASO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=1000
+        tamanho_lote=100000
     )
 
     df = montar_df_itens(itens)
-
-    if df.empty or "status" not in df.columns:
-        st.info("Nenhum pedido fora do atraso.")
-        return
-
-    df = df[df["status"] == STATUS_FORA_ATRASO]
 
     if df.empty:
         st.info("Nenhum pedido fora do atraso.")
@@ -1736,16 +1686,10 @@ def tela_cancelados():
         ativos=False,
         status=STATUS_CANCELADO,
         campos=CAMPOS_LISTAGEM,
-        tamanho_lote=1000
+        tamanho_lote=100000
     )
 
     df = montar_df_itens(itens)
-
-    if df.empty or "status" not in df.columns:
-        st.info("Nenhum pedido retirado da conta.")
-        return
-
-    df = df[df["status"] == STATUS_CANCELADO]
 
     if df.empty:
         st.info("Nenhum pedido retirado da conta.")
