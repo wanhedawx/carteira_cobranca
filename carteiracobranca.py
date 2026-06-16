@@ -26,24 +26,23 @@ ANALISTAS = {
         "Portas e Janelas", "Ferramentas", "Ferragens", "Automotivos"
     ],
     "Alec": [
-        "Eletrica", "Elétrica", "Hidraulica", "Hidráulica", "Iluminação", "Iluminacao"
+        "Eletrica", "Iluminacao", "Hidraulica"
     ],
     "Jonatas": [
-        "Moveis e Colchoes", "Decoração", "Móveis e Decoração", "Cama Mesa e Banho", "Lazer",
-        "Casa e UD e Jardim", "Casa UD e Jardim", "Casa e Jardim", "Utilidades Domésticas"
+        "Moveis e Colchoes", "Decoracao", "Cama Mesa e Banho", "Lazer",
+        "Casa e UD", "Jardim",
     ],
     "Beatriz": [
-        "Eletro", "Tecnologia", "Climatização", "Climatizacao"
+        "Eletro", "Tecnologia", "Climatizacao"
     ],
     "Ruan": [
-        "Tintas", "Organização da Casa", "Organizacao da Casa"
+        "Tintas", "Organizacao da Casa"
     ],
     "Jessica": [
-        "Materiais de Construção", "Materias de Construçao", "Materiais de Construcao",
-        "Banho e Cozinha"
+        "Materiais de Construcao", "Banho e Cozinha"
     ],
     "Rose": [
-        "Pisos e revestimento"    
+        "Pisos e Revestimento"
     ],
 }
 
@@ -54,6 +53,13 @@ STATUS_ACIONAR_COMPRADOR = "ACIONAR COMPRADOR"
 STATUS_COMPRADOR_ACIONADO = "COMPRADOR ACIONADO"
 STATUS_FORA_ATRASO = "FORA DO ATRASO"
 STATUS_CANCELADO = "CANCELADO / RETIRADO"
+
+COLUNAS_MOEDA = [
+    "saldo_cmv",
+    "pre_nota_cmv",
+    "nao_faturado_cmv",
+    "valor_total_cmv",
+]
 
 # =========================
 # ESTILO
@@ -117,6 +123,7 @@ def agora_str():
 def data_br(data_obj):
     if not data_obj:
         return ""
+
     try:
         return data_obj.strftime("%d/%m/%Y")
     except Exception:
@@ -130,6 +137,10 @@ def sem_acento(txt):
 
 def norm(txt):
     txt = sem_acento(txt).upper().strip()
+
+    for ch in ["-", "–", "—", "_", ".", "/", "\\", "(", ")", "$", "º", "ª"]:
+        txt = txt.replace(ch, " ")
+
     txt = " ".join(txt.split())
     return txt
 
@@ -153,6 +164,7 @@ def converter_data(valor):
         try:
             if 30000 <= float(valor) <= 60000:
                 dt = pd.to_datetime(valor, unit="D", origin="1899-12-30", errors="coerce")
+
                 if not pd.isna(dt):
                     return dt.date()
         except Exception:
@@ -199,13 +211,29 @@ def converter_numero(valor):
 def formatar_moeda(valor):
     try:
         if valor is None or str(valor).strip() == "":
-            return "-"
+            return "R$ 0,00"
+
+        if isinstance(valor, str) and valor.strip().startswith("R$"):
+            return valor
 
         v = float(valor)
 
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
-        return str(valor or "-")
+        return str(valor or "R$ 0,00")
+
+
+def formatar_df_moeda(df):
+    if df is None or df.empty:
+        return df
+
+    df_formatado = df.copy()
+
+    for col in COLUNAS_MOEDA:
+        if col in df_formatado.columns:
+            df_formatado[col] = df_formatado[col].apply(formatar_moeda)
+
+    return df_formatado
 
 
 def status_por_cobranca(qtd, comprador_acionado=False):
@@ -293,6 +321,7 @@ def menor_data(series):
         return None
 
     return min(datas)
+
 
 # =========================
 # FIREBASE
@@ -416,6 +445,7 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
         "historico": ArrayUnion([evento])
     })
 
+
 # =========================
 # LEITURA DO ARQUIVO
 # =========================
@@ -489,17 +519,23 @@ def mapear_colunas_fixas(df):
         ]),
         "saldo_cmv": encontrar_coluna_fixa(df, [
             "Saldo R$ (CMV)",
-            "Saldo CMV",
-            "Saldo R CMV"
+            "Saldo R CMV",
+            "Saldo CMV"
         ]),
         "pre_nota_cmv": encontrar_coluna_fixa(df, [
+            "Pré-nota R$ (CMV)",
+            "Pre-nota R$ (CMV)",
+            "Pré Nota R$ (CMV)",
+            "Pre Nota R$ (CMV)",
             "Pré-Nota R$ (CMV)",
             "Pre-Nota R$ (CMV)",
+            "Pré-nota CMV",
+            "Pre-nota CMV",
+            "Pré Nota CMV",
+            "Pre Nota CMV",
             "Pré-Nota CMV",
             "Pre-Nota CMV",
-            "Prenota CMV",
-            "Pré-Nota CMV",
-            "Pre-Nota CMV"
+            "Prenota CMV"
         ]),
         "nao_faturado_cmv": encontrar_coluna_fixa(df, [
             "Não Faturado R$ (CMV)",
@@ -768,6 +804,7 @@ def processar_carteira(df, usuario):
         "agrupado": agrupado,
     }
 
+
 # =========================
 # LOGIN
 # =========================
@@ -822,6 +859,7 @@ st.sidebar.write(f"Hoje: **{data_br(hoje())}**")
 st.sidebar.write(f"Cobrar até: **{data_br(data_limite_cobranca())}**")
 st.sidebar.write("Usa a menor Data Prev Entrega do pedido.")
 st.sidebar.write("Pedido que sumiu do arquivo sai da conta.")
+
 
 # =========================
 # TELAS
@@ -952,7 +990,7 @@ def configurar_colunas_e_processar(df, origem_texto):
         {"Campo usado": "Fornecedor", "Coluna encontrada": colunas.get("fornecedor")},
         {"Campo usado": "Menor Data Prev Entrega", "Coluna encontrada": colunas.get("data_prev_entrega")},
         {"Campo usado": "Saldo CMV", "Coluna encontrada": colunas.get("saldo_cmv")},
-        {"Campo usado": "Pré Nota CMV", "Coluna encontrada": colunas.get("pre_nota_cmv")},
+        {"Campo usado": "Pré-nota CMV", "Coluna encontrada": colunas.get("pre_nota_cmv")},
         {"Campo usado": "Não Faturado CMV", "Coluna encontrada": colunas.get("nao_faturado_cmv")},
     ])
 
@@ -983,7 +1021,7 @@ def configurar_colunas_e_processar(df, origem_texto):
 
     c5, c6, c7 = st.columns(3)
     c5.metric("Saldo CMV", formatar_moeda(total_saldo))
-    c6.metric("Pré Nota CMV", formatar_moeda(total_pre_nota))
+    c6.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
     c7.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
 
     if not preview_cobranca.empty:
@@ -1000,17 +1038,19 @@ def configurar_colunas_e_processar(df, origem_texto):
             valor_total_cmv=("valor_total_cmv", "sum")
         ).reset_index()
 
-        st.dataframe(resumo, use_container_width=True, hide_index=True)
+        st.dataframe(formatar_df_moeda(resumo), use_container_width=True, hide_index=True)
 
         sem_analista = preview_cobranca[preview_cobranca["analista"] == "SEM ANALISTA"]
 
         if not sem_analista.empty:
             st.warning("Existem departamentos em atraso sem analista. Confira a escrita do departamento.")
             st.dataframe(
-                sem_analista[[
-                    "pedido", "departamento", "dt_agendada", "fornecedor",
-                    "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "valor_total_cmv"
-                ]].head(50),
+                formatar_df_moeda(
+                    sem_analista[[
+                        "pedido", "departamento", "dt_agendada", "fornecedor",
+                        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "valor_total_cmv"
+                    ]].head(50)
+                ),
                 use_container_width=True,
                 hide_index=True
             )
@@ -1019,7 +1059,11 @@ def configurar_colunas_e_processar(df, origem_texto):
         if preview_cobranca.empty:
             st.write("Nenhum pedido entra na cobrança pelo critério de data.")
         else:
-            st.dataframe(preview_cobranca.head(300), use_container_width=True, hide_index=True)
+            st.dataframe(
+                formatar_df_moeda(preview_cobranca.head(300)),
+                use_container_width=True,
+                hide_index=True
+            )
 
     if avisos:
         with st.expander("Avisos encontrados"):
@@ -1101,16 +1145,19 @@ def tela_carteira(analista=None):
     )
 
     st.subheader("Pedidos em atraso para cobrar")
+
+    df_tela = df_filtrado.drop(columns=["doc_id"], errors="ignore")
+
     st.dataframe(
-        df_filtrado.drop(columns=["doc_id"], errors="ignore"),
+        formatar_df_moeda(df_tela),
         use_container_width=True,
         hide_index=True
     )
 
-    csv = df_filtrado.drop(
-        columns=["doc_id"],
-        errors="ignore"
-    ).to_csv(index=False, sep=";").encode("utf-8-sig")
+    df_csv = df_filtrado.drop(columns=["doc_id"], errors="ignore")
+    df_csv = formatar_df_moeda(df_csv)
+
+    csv = df_csv.to_csv(index=False, sep=";").encode("utf-8-sig")
 
     st.download_button(
         "Baixar carteira filtrada em CSV",
@@ -1143,7 +1190,7 @@ def tela_carteira(analista=None):
                     <b>Fornecedor:</b> {linha.get('fornecedor', '-') or '-'}<br>
                     <b>Qtd. itens do pedido:</b> {linha.get('qtd_itens', 0)}<br>
                     <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
-                    <b>Pré Nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
+                    <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
                     <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
                     <b>Valor Total CMV:</b> {formatar_moeda(linha.get('valor_total_cmv', 0))}<br>
                     <b>Cobranças:</b> {cobrancas}<br>
@@ -1220,7 +1267,7 @@ def tela_fora_atraso():
     st.metric("Fora do atraso", len(df_filtrado))
 
     st.dataframe(
-        df_filtrado.drop(columns=["doc_id"], errors="ignore"),
+        formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
         use_container_width=True,
         hide_index=True
     )
@@ -1247,7 +1294,7 @@ def tela_cancelados():
     st.metric("Retirados da conta", len(df_filtrado))
 
     st.dataframe(
-        df_filtrado.drop(columns=["doc_id"], errors="ignore"),
+        formatar_df_moeda(df_filtrado.drop(columns=["doc_id"], errors="ignore")),
         use_container_width=True,
         hide_index=True
     )
@@ -1265,7 +1312,7 @@ def tela_regras():
     st.write("Não existe regra de marcar como entregue.")
 
     st.subheader("Valores considerados")
-    st.write("Valor Total CMV = Saldo R$ (CMV) + Pré Nota R$ (CMV) + Não Faturado R$ (CMV).")
+    st.write("Valor Total CMV = Saldo R$ (CMV) + Pré-nota R$ (CMV) + Não Faturado R$ (CMV).")
 
     st.subheader("Analistas")
 
@@ -1279,6 +1326,7 @@ def tela_regras():
     st.write("4. Na 3ª cobrança: status muda para Acionar Comprador.")
     st.write("5. Quando o comprador for acionado, marque no sistema.")
     st.write("6. Se o pedido sair do arquivo, ele sai da conta como Cancelado / Retirado.")
+
 
 # =========================
 # ROTEAMENTO
