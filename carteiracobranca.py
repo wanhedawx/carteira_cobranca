@@ -368,6 +368,20 @@ def menor_data(series):
     return min(datas)
 
 
+def extrair_pedidos_texto(texto):
+    if not texto:
+        return []
+
+    txt = str(texto)
+    txt = txt.replace("\n", " ")
+    txt = txt.replace(",", " ")
+    txt = txt.replace(";", " ")
+    txt = txt.replace("|", " ")
+
+    partes = [p.strip() for p in txt.split(" ") if p.strip()]
+    return list(dict.fromkeys([norm(p) for p in partes]))
+
+
 # =========================
 # NEON / POSTGRES
 # =========================
@@ -723,6 +737,11 @@ def registrar_cobranca(doc_id, usuario, observacao):
 
             conn.execute(INSERT_HISTORICO_SQL, evento)
 
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
     except Exception as e:
         st.error("Erro ao registrar cobrança.")
         with st.expander("Ver detalhe técnico"):
@@ -770,8 +789,165 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
 
             conn.execute(INSERT_HISTORICO_SQL, evento)
 
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
     except Exception as e:
         st.error("Erro ao marcar comprador acionado.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def registrar_cobranca_lote(doc_ids, usuario, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return
+
+    itens = buscar_docs_por_ids(
+        ids,
+        campos=[
+            "doc_id",
+            "pedido",
+            "cobrancas",
+            "comprador_acionado",
+        ]
+    )
+
+    if not itens:
+        st.error("Nenhum pedido encontrado para registrar cobrança.")
+        return
+
+    data_evento = agora_str()
+    updates = []
+    historicos = []
+
+    for item in itens:
+        doc_id = item["doc_id"]
+        atual = int(item.get("cobrancas", 0) or 0)
+        nova_qtd = atual + 1
+        comprador_acionado = bool(item.get("comprador_acionado", False))
+        novo_status = status_por_cobranca(nova_qtd, comprador_acionado)
+
+        updates.append({
+            "doc_id": doc_id,
+            "cobrancas": nova_qtd,
+            "status": novo_status,
+            "ultima_cobranca": data_evento,
+            "atualizado_em": data_evento,
+        })
+
+        historicos.append({
+            "doc_id": doc_id,
+            "pedido": item.get("pedido", ""),
+            "tipo": "COBRANCA",
+            "data": data_evento,
+            "usuario": usuario,
+            "observacao": observacao or "",
+            "cobranca_numero": nova_qtd,
+            "status_apos": novo_status,
+        })
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        cobrancas = :cobrancas,
+                        status = :status,
+                        ultima_cobranca = :ultima_cobranca,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                updates
+            )
+
+            conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+    except Exception as e:
+        st.error("Erro ao registrar cobrança em lote.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def marcar_comprador_acionado_lote(doc_ids, usuario, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return
+
+    itens = buscar_docs_por_ids(
+        ids,
+        campos=[
+            "doc_id",
+            "pedido",
+        ]
+    )
+
+    if not itens:
+        st.error("Nenhum pedido encontrado para marcar comprador acionado.")
+        return
+
+    data_evento = agora_str()
+
+    updates = []
+    historicos = []
+
+    for item in itens:
+        doc_id = item["doc_id"]
+
+        updates.append({
+            "doc_id": doc_id,
+            "status": STATUS_COMPRADOR_ACIONADO,
+            "atualizado_em": data_evento,
+        })
+
+        historicos.append({
+            "doc_id": doc_id,
+            "pedido": item.get("pedido", ""),
+            "tipo": "COMPRADOR_ACIONADO",
+            "data": data_evento,
+            "usuario": usuario,
+            "observacao": observacao or "",
+            "cobranca_numero": None,
+            "status_apos": STATUS_COMPRADOR_ACIONADO,
+        })
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set
+                        comprador_acionado = true,
+                        status = :status,
+                        atualizado_em = :atualizado_em
+                    where doc_id = :doc_id
+                """),
+                updates
+            )
+
+            conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+    except Exception as e:
+        st.error("Erro ao marcar comprador acionado em lote.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -1167,6 +1343,11 @@ def processar_carteira(df, usuario):
             if historicos:
                 conn.execute(INSERT_HISTORICO_SQL, historicos)
 
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
     except Exception as e:
         st.error("Erro ao processar carteira no Neon.")
         with st.expander("Ver detalhe técnico"):
@@ -1320,18 +1501,34 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_status != "TODOS":
                 df = df[df["status"] == f_status]
 
-    busca = st.text_input(
+    busca = st.text_area(
         "Pesquisar pedido, fornecedor ou departamento",
-        key=f"{key_prefix}_busca"
+        key=f"{key_prefix}_busca",
+        height=80,
+        placeholder="Pode colar vários pedidos separados por espaço, vírgula ou quebra de linha"
     )
 
     if busca:
-        busca_n = norm(busca)
-        mask = df.apply(
-            lambda linha: busca_n in norm(" ".join(str(v) for v in linha.values)),
-            axis=1
-        )
-        df = df[mask]
+        tokens = extrair_pedidos_texto(busca)
+
+        if tokens:
+            def linha_match(linha):
+                pedido_n = norm(linha.get("pedido", ""))
+                texto_linha = norm(" ".join(str(v) for v in linha.values))
+
+                for token in tokens:
+                    if token == pedido_n:
+                        return True
+
+                    if token in pedido_n:
+                        return True
+
+                    if token in texto_linha:
+                        return True
+
+                return False
+
+            df = df[df.apply(linha_match, axis=1)]
 
     return df
 
@@ -1573,7 +1770,7 @@ def tela_carteira(analista=None):
     )
 
     st.divider()
-    st.subheader("Ação de cobrança")
+    st.subheader("Ação de cobrança em lote")
 
     if df_filtrado.empty:
         st.info("Nenhum pedido encontrado com os filtros.")
@@ -1591,84 +1788,133 @@ def tela_carteira(analista=None):
         + df_filtrado["fornecedor"].astype(str)
     )
 
-    opcao = st.selectbox(
-        "Selecione um pedido para cobrar",
+    st.caption("Você pode selecionar vários pedidos abaixo ou colar vários pedidos no campo de texto.")
+
+    selecionados_opcoes = st.multiselect(
+        "Selecione um ou mais pedidos",
         df_filtrado["opcao_pedido"].tolist(),
-        key=f"pedido_acao_{analista or 'geral'}"
+        key=f"pedidos_lote_{analista or 'geral'}"
     )
 
-    linha = df_filtrado[df_filtrado["opcao_pedido"] == opcao].iloc[0]
-
-    doc_id = linha["doc_id"]
-    status = linha.get("status", STATUS_PENDENTE)
-    cobrancas = int(linha.get("cobrancas", 0) or 0)
-
-    st.markdown(
-        f"""
-        <div class="card">
-            <b>Pedido:</b> {linha.get('pedido', '-')}<br>
-            <b>Status:</b> {badge(status)}<br>
-            <b>Analista:</b> {linha.get('analista', '-')}<br>
-            <b>Departamento:</b> {linha.get('departamento', '-')}<br>
-            <b>Menor Data Prev Entrega:</b> {linha.get('dt_agendada', '-') or '-'}<br>
-            <b>Fornecedor:</b> {linha.get('fornecedor', '-') or '-'}<br>
-            <b>Qtd. itens do pedido sem agendamento:</b> {linha.get('qtd_itens', 0)}<br>
-            <b>Saldo CMV:</b> {formatar_moeda(linha.get('saldo_cmv', 0))}<br>
-            <b>Pré-nota CMV:</b> {formatar_moeda(linha.get('pre_nota_cmv', 0))}<br>
-            <b>Não Faturado CMV:</b> {formatar_moeda(linha.get('nao_faturado_cmv', 0))}<br>
-            <b>Cobranças:</b> {cobrancas}<br>
-            <b>Última cobrança:</b> {linha.get('ultima_cobranca', '') or '-'}
-        </div>
-        """,
-        unsafe_allow_html=True
+    pedidos_colados = st.text_area(
+        "Ou cole vários pedidos para aplicar o mesmo retorno",
+        key=f"pedidos_colados_{analista or 'geral'}",
+        height=90,
+        placeholder="Ex.: 12345 45678 99999\nou um pedido por linha"
     )
+
+    dfs_selecionados = []
+
+    if selecionados_opcoes:
+        dfs_selecionados.append(
+            df_filtrado[df_filtrado["opcao_pedido"].isin(selecionados_opcoes)]
+        )
+
+    pedidos_digitados_norm = extrair_pedidos_texto(pedidos_colados)
+
+    if pedidos_digitados_norm:
+        df_digitados = df_filtrado[
+            df_filtrado["pedido"].apply(lambda x: norm(x) in pedidos_digitados_norm)
+        ]
+
+        dfs_selecionados.append(df_digitados)
+
+    if dfs_selecionados:
+        df_acao = pd.concat(dfs_selecionados, ignore_index=True)
+        df_acao = df_acao.drop_duplicates(subset=["doc_id"])
+    else:
+        df_acao = pd.DataFrame()
+
+    if df_acao.empty:
+        st.info("Selecione ou cole os pedidos que receberão o mesmo retorno.")
+        return
+
+    st.success(f"{len(df_acao)} pedido(s) selecionado(s) para ação em lote.")
+
+    colunas_acao = [
+        "pedido",
+        "analista",
+        "departamento",
+        "fornecedor",
+        "dt_agendada",
+        "saldo_cmv",
+        "pre_nota_cmv",
+        "nao_faturado_cmv",
+        "status",
+        "cobrancas",
+        "ultima_cobranca",
+    ]
+
+    colunas_acao = [c for c in colunas_acao if c in df_acao.columns]
+
+    st.dataframe(
+        formatar_df_moeda(df_acao[colunas_acao]),
+        use_container_width=True,
+        hide_index=True,
+        height=260
+    )
+
+    total_saldo = df_acao["saldo_cmv"].sum() if "saldo_cmv" in df_acao.columns else 0
+
+    c1, c2 = st.columns(2)
+    c1.metric("Pedidos selecionados", len(df_acao))
+    c2.metric("Saldo CMV selecionado", formatar_moeda(total_saldo))
 
     obs = st.text_area(
-        "Observação da cobrança",
-        key=f"obs_{doc_id}",
-        placeholder="Ex.: cobrado fornecedor por e-mail/WhatsApp, retorno previsto..."
+        "Observação que será aplicada para todos os pedidos selecionados",
+        key=f"obs_lote_{analista or 'geral'}",
+        placeholder="Ex.: cobrado representante X referente às fábricas/pedidos selecionados..."
     )
+
+    doc_ids = df_acao["doc_id"].dropna().tolist()
 
     col_a, col_b = st.columns(2)
 
-    if cobrancas == 2 and status != STATUS_COMPRADOR_ACIONADO:
-        st.warning("A próxima cobrança será a 3ª. Pela regra, o comprador deve ser acionado.")
-
     with col_a:
         if st.button(
-            "Registrar cobrança",
-            key=f"cobrar_{doc_id}",
+            "Registrar cobrança em lote",
+            key=f"cobrar_lote_{analista or 'geral'}",
             use_container_width=True
         ):
-            registrar_cobranca(doc_id, usuario_logado, obs)
-            st.success("Cobrança registrada.")
+            registrar_cobranca_lote(doc_ids, usuario_logado, obs)
+            st.success(f"Cobrança registrada para {len(doc_ids)} pedido(s).")
             st.rerun()
 
     with col_b:
-        desabilitar = (
-            status not in [STATUS_ACIONAR_COMPRADOR, STATUS_COMPRADOR_ACIONADO]
-            and cobrancas < 3
-        )
+        pode_acionar = True
+
+        for _, linha in df_acao.iterrows():
+            cobrancas = int(linha.get("cobrancas", 0) or 0)
+            status = linha.get("status", "")
+
+            if cobrancas < 3 and status not in [STATUS_ACIONAR_COMPRADOR, STATUS_COMPRADOR_ACIONADO]:
+                pode_acionar = False
+
+        if not pode_acionar:
+            st.caption("Para marcar comprador acionado em lote, todos os pedidos precisam estar na 3ª cobrança ou no status Acionar Comprador.")
 
         if st.button(
-            "Marcar comprador acionado",
-            key=f"comprador_{doc_id}",
+            "Marcar comprador acionado em lote",
+            key=f"comprador_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=desabilitar
+            disabled=not pode_acionar
         ):
-            marcar_comprador_acionado(doc_id, usuario_logado, obs)
-            st.success("Comprador acionado registrado.")
+            marcar_comprador_acionado_lote(doc_ids, usuario_logado, obs)
+            st.success(f"Comprador acionado registrado para {len(doc_ids)} pedido(s).")
             st.rerun()
 
-    if st.button("Carregar histórico", key=f"historico_{doc_id}"):
-        historico = historico_doc(doc_id)
+    if len(df_acao) == 1:
+        doc_id_unico = df_acao.iloc[0]["doc_id"]
 
-        if historico:
-            hist_df = pd.DataFrame(historico)
-            st.caption("Histórico")
-            st.dataframe(hist_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("Sem histórico para este pedido.")
+        if st.button("Carregar histórico do pedido selecionado", key=f"historico_{doc_id_unico}"):
+            historico = historico_doc(doc_id_unico)
+
+            if historico:
+                hist_df = pd.DataFrame(historico)
+                st.caption("Histórico")
+                st.dataframe(hist_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sem histórico para este pedido.")
 
 
 def tela_fora_atraso():
