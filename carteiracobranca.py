@@ -349,6 +349,15 @@ def conectar_firestore():
 db = conectar_firestore()
 
 
+def retry_config():
+    return Retry(
+        initial=1.0,
+        maximum=10.0,
+        multiplier=2.0,
+        deadline=90.0
+    )
+
+
 def salvar_em_lotes(operacoes):
     batch = db.batch()
     contador = 0
@@ -362,61 +371,117 @@ def salvar_em_lotes(operacoes):
         contador += 1
 
         if contador >= 450:
-            batch.commit()
+            batch.commit(retry=retry_config(), timeout=90)
             batch = db.batch()
             contador = 0
 
     if contador:
-        batch.commit()
+        batch.commit(retry=retry_config(), timeout=90)
 
 
-def buscar_docs(ativos=None):
+def buscar_docs(ativos=None, tamanho_lote=300):
     try:
         col = db.collection(COLLECTION)
 
-        retry_config = Retry(
-            initial=1.0,
-            maximum=10.0,
-            multiplier=2.0,
-            deadline=60.0
-        )
+        query_base = col
 
         if ativos is True:
-            query = col.where("ativo", "==", True)
+            query_base = query_base.where("ativo", "==", True)
         elif ativos is False:
-            query = col.where("ativo", "==", False)
-        else:
-            query = col
-
-        docs = query.stream(
-            retry=retry_config,
-            timeout=60
-        )
+            query_base = query_base.where("ativo", "==", False)
 
         linhas = []
+        ultimo_doc = None
 
-        for d in docs:
-            item = d.to_dict()
-            item["doc_id"] = d.id
-            linhas.append(item)
+        while True:
+            query = query_base.order_by("__name__").limit(tamanho_lote)
+
+            if ultimo_doc is not None:
+                query = query.start_after(ultimo_doc)
+
+            docs_lote = list(
+                query.stream(
+                    retry=retry_config(),
+                    timeout=90
+                )
+            )
+
+            if not docs_lote:
+                break
+
+            for d in docs_lote:
+                item = d.to_dict()
+                item["doc_id"] = d.id
+                linhas.append(item)
+
+            ultimo_doc = docs_lote[-1]
+
+            if len(docs_lote) < tamanho_lote:
+                break
 
         return linhas
 
-    except (RetryError, DeadlineExceeded, ServiceUnavailable):
-        st.error("Não consegui consultar o Firebase agora. Tente novamente em alguns segundos.")
-        st.info("Se continuar, abra o Streamlit Cloud > Manage app > Logs para ver o erro completo do Firebase.")
+    except (RetryError, DeadlineExceeded, ServiceUnavailable) as e:
+        st.error("Não consegui consultar o Firebase agora.")
+        st.info("Isso normalmente acontece por timeout, instabilidade ou configuração do Firestore.")
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
         st.stop()
 
     except Exception as e:
         st.error("Erro ao consultar o Firebase.")
-        st.write(str(e))
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
+        st.stop()
+
+
+def buscar_docs_por_ids(doc_ids, tamanho_lote=300):
+    try:
+        ids = list(doc_ids)
+
+        if not ids:
+            return []
+
+        linhas = []
+
+        for i in range(0, len(ids), tamanho_lote):
+            lote_ids = ids[i:i + tamanho_lote]
+            refs = [
+                db.collection(COLLECTION).document(doc_id)
+                for doc_id in lote_ids
+            ]
+
+            snaps = db.get_all(
+                refs,
+                retry=retry_config(),
+                timeout=90
+            )
+
+            for snap in snaps:
+                if snap.exists:
+                    item = snap.to_dict()
+                    item["doc_id"] = snap.id
+                    linhas.append(item)
+
+        return linhas
+
+    except (RetryError, DeadlineExceeded, ServiceUnavailable) as e:
+        st.error("Não consegui buscar os pedidos no Firebase agora.")
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
+        st.stop()
+
+    except Exception as e:
+        st.error("Erro ao buscar pedidos no Firebase.")
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
         st.stop()
 
 
 def buscar_doc(doc_id):
     try:
         ref = db.collection(COLLECTION).document(doc_id)
-        snap = ref.get(timeout=60)
+        snap = ref.get(retry=retry_config(), timeout=90)
 
         if not snap.exists:
             return None
@@ -428,7 +493,8 @@ def buscar_doc(doc_id):
 
     except Exception as e:
         st.error("Erro ao buscar o pedido no Firebase.")
-        st.write(str(e))
+        with st.expander("Ver detalhe técnico do erro"):
+            st.code(repr(e))
         st.stop()
 
 
@@ -453,12 +519,16 @@ def registrar_cobranca(doc_id, usuario, observacao):
         "status_apos": novo_status,
     }
 
-    db.collection(COLLECTION).document(doc_id).update({
-        "cobrancas": nova_qtd,
-        "status": novo_status,
-        "ultima_cobranca": agora_str(),
-        "historico": ArrayUnion([evento])
-    })
+    db.collection(COLLECTION).document(doc_id).update(
+        {
+            "cobrancas": nova_qtd,
+            "status": novo_status,
+            "ultima_cobranca": agora_str(),
+            "historico": ArrayUnion([evento])
+        },
+        retry=retry_config(),
+        timeout=90
+    )
 
 
 def marcar_comprador_acionado(doc_id, usuario, observacao):
@@ -469,12 +539,16 @@ def marcar_comprador_acionado(doc_id, usuario, observacao):
         "observacao": observacao or "",
     }
 
-    db.collection(COLLECTION).document(doc_id).update({
-        "comprador_acionado": True,
-        "status": STATUS_COMPRADOR_ACIONADO,
-        "data_comprador_acionado": agora_str(),
-        "historico": ArrayUnion([evento])
-    })
+    db.collection(COLLECTION).document(doc_id).update(
+        {
+            "comprador_acionado": True,
+            "status": STATUS_COMPRADOR_ACIONADO,
+            "data_comprador_acionado": agora_str(),
+            "historico": ArrayUnion([evento])
+        },
+        retry=retry_config(),
+        timeout=90
+    )
 
 
 # =========================
@@ -700,9 +774,10 @@ def processar_carteira(df, usuario):
     ids_arquivo = {x["doc_id"] for x in linhas_todas}
     ids_cobranca = {x["doc_id"] for x in linhas_cobranca}
 
-    existentes_lista = buscar_docs()
+    existentes_lista = buscar_docs_por_ids(ids_cobranca)
     existentes = {x["doc_id"]: x for x in existentes_lista}
-    ativos_anteriores = [x for x in existentes_lista if x.get("ativo") is True]
+
+    ativos_anteriores = buscar_docs(ativos=True)
 
     data_proc = agora_str()
     operacoes = []
