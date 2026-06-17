@@ -796,7 +796,7 @@ def registrar_cobranca_lote(doc_ids, usuario, observacao):
             pass
 
     except Exception as e:
-        st.error("Erro ao registrar cobrança em lote.")
+        st.error("Erro ao registrar cobrança.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -948,13 +948,13 @@ def sinalizar_acionar_comprador_lote(doc_ids, usuario, observacao):
             "tipo": "NECESSARIO_ACIONAR_COMPRADOR",
             "data": data_evento,
             "usuario": usuario,
-            "observacao": observacao or "Após 2 cobranças sem retorno, necessário acionar comprador.",
+            "observacao": observacao or "Após 3 cobranças sem retorno, necessário acionar comprador.",
             "cobranca_numero": cobrancas,
             "status_apos": STATUS_ACIONAR_COMPRADOR,
         })
 
     if not updates:
-        st.warning("Nenhum pedido estava com 2 cobranças para acionar comprador.")
+        st.warning("Nenhum pedido estava com 3 cobranças para acionar comprador.")
         return
 
     try:
@@ -979,7 +979,7 @@ def sinalizar_acionar_comprador_lote(doc_ids, usuario, observacao):
 
         if ignorados:
             st.warning(
-                "Pedidos ignorados porque ainda não têm 2 cobranças: "
+                "Pedidos ignorados porque ainda não têm 3 cobranças: "
                 + ", ".join(str(x) for x in ignorados[:20])
             )
 
@@ -1056,7 +1056,7 @@ def marcar_comprador_acionado_lote(doc_ids, usuario, observacao):
             pass
 
     except Exception as e:
-        st.error("Erro ao marcar comprador acionado em lote.")
+        st.error("Erro ao marcar comprador acionado.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -1662,7 +1662,7 @@ def senha_valida(usuario, senha):
 
 def tela_login():
     st.title("📋 Cobrança de Carteira")
-    st.caption("Acompanhamento de pedidos atrasados por analista, departamento e cobrança.")
+    st.caption("Acompanhamento de pedidos atrasados.")
 
     with st.form("login"):
         usuario = st.selectbox("Usuário", ["Admin"] + list(ANALISTAS.keys()))
@@ -2100,7 +2100,7 @@ def gerar_excel_bytes(df):
 
 
 def tela_exportar_acionar_comprador():
-    st.header("📣 Exportar Acionar Comprador")
+    st.header("Exportar Acionar Comprador")
 
     st.caption(
         "Exporta todos os pedidos ativos com status ACIONAR COMPRADOR, "
@@ -2115,10 +2115,28 @@ def tela_exportar_acionar_comprador():
 
     df_pedidos_unicos = df_export.drop_duplicates(subset=["pedido"])
 
-    c1, c2, c3 = st.columns(3)
+    total_saldo_pedido = (
+        df_pedidos_unicos["Saldo R$ Pedido"].sum()
+        if "Saldo R$ Pedido" in df_pedidos_unicos.columns
+        else 0
+    )
+    total_pre_nota_pedido = (
+        df_pedidos_unicos["Pré-nota R$ Pedido"].sum()
+        if "Pré-nota R$ Pedido" in df_pedidos_unicos.columns
+        else 0
+    )
+    total_nao_faturado_pedido = (
+        df_pedidos_unicos["Não Faturado R$ Pedido"].sum()
+        if "Não Faturado R$ Pedido" in df_pedidos_unicos.columns
+        else 0
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Linhas de itens", len(df_export))
     c2.metric("Pedidos", df_export["pedido"].nunique())
-    c3.metric("Saldo CMV", formatar_moeda(df_pedidos_unicos["Saldo R$ Pedido"].sum()))
+    c3.metric("Saldo CMV", formatar_moeda(total_saldo_pedido))
+    c4.metric("Pré-nota CMV", formatar_moeda(total_pre_nota_pedido))
+    c5.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado_pedido))
 
     st.dataframe(
         formatar_df_moeda(df_export),
@@ -2139,7 +2157,7 @@ def tela_exportar_acionar_comprador():
 
 
 def tela_upload():
-    st.header("📤 Atualizar carteira")
+    st.header("Atualizar carteira")
 
     st.warning(
         "A cobrança será montada somente com produtos/pedidos sem DT Agendamento. "
@@ -2539,7 +2557,7 @@ st.caption("Controle de pedidos atrasados por analista, departamento, comprador 
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Fora do Atraso", "Retirados da Conta", "Regras"],
+        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -2552,12 +2570,6 @@ if usuario_logado == "Admin":
 
     elif pagina == "Exportar Comprador":
         tela_exportar_acionar_comprador()
-
-    elif pagina == "Fora do Atraso":
-        tela_fora_atraso()
-
-    elif pagina == "Retirados da Conta":
-        tela_cancelados()
 
     elif pagina == "Regras":
         tela_regras()
