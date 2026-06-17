@@ -1918,10 +1918,13 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
     if df.empty:
         return df
 
-    c1, c2, c3 = st.columns(3)
+    # Filtros na mesma linha.
+    # Admin: Analista | Departamento | Status | Pesquisar
+    # Analista: Pesquisar | Departamento | Status
+    if pode_filtrar_analista and "analista" in df.columns:
+        col_analista, col_dep, col_status, col_busca = st.columns([1.1, 1.3, 1.1, 2.0])
 
-    with c1:
-        if pode_filtrar_analista and "analista" in df.columns:
+        with col_analista:
             analistas = ["TODOS"] + sorted(df["analista"].dropna().unique().tolist())
             f_analista = st.selectbox(
                 "Analista",
@@ -1931,8 +1934,10 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
 
             if f_analista != "TODOS":
                 df = df[df["analista"] == f_analista]
+    else:
+        col_busca, col_dep, col_status = st.columns([2.0, 1.3, 1.1])
 
-    with c2:
+    with col_dep:
         if "departamento" in df.columns:
             deps = ["TODOS"] + sorted(df["departamento"].dropna().unique().tolist())
             f_dep = st.selectbox(
@@ -1944,7 +1949,7 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_dep != "TODOS":
                 df = df[df["departamento"] == f_dep]
 
-    with c3:
+    with col_status:
         if "status" in df.columns:
             sts = ["TODOS"] + sorted(df["status"].dropna().unique().tolist())
             f_status = st.selectbox(
@@ -1956,12 +1961,12 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_status != "TODOS":
                 df = df[df["status"] == f_status]
 
-    busca = st.text_area(
-        "Pesquisar pedido, fornecedor ou departamento",
-        key=f"{key_prefix}_busca",
-        height=80,
-        placeholder="Pode colar vários pedidos separados por espaço, vírgula ou quebra de linha"
-    )
+    with col_busca:
+        busca = st.text_input(
+            "Pesquisar pedido, fornecedor ou departamento",
+            key=f"{key_prefix}_busca",
+            placeholder="Ex.: LADK55, fornecedor ou departamento"
+        )
 
     if busca:
         tokens = extrair_pedidos_texto(busca)
@@ -1992,7 +1997,6 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
                 df = df[df.apply(linha_match, axis=1)]
 
     return df
-
 
 def metricas(df):
     if df.empty:
