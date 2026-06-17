@@ -2178,16 +2178,15 @@ def montar_exportacao_acionar_comprador():
 
     if not df.empty:
         ordem = [
-            "Analista",
-            "Departamento",
-            "Fornecedor",
-            "Pedido",
-            "Data Prev. Entrega"
-            "Status",
-            "Cobrancas",
-            "Ultima Cobrança"
-            "Cod. Prod",
-            "Desc. Prod",
+            "pedido",
+            "analista",
+            "departamento",
+            "fornecedor",
+            "data_prev_entrega",
+            "status",
+            "cobrancas",
+            "Cod_Prod",
+            "Desc_Prod",
             "Saldo QTD",
             "Não Faturado QTD",
             "Pré-nota QTD",
@@ -2197,6 +2196,7 @@ def montar_exportacao_acionar_comprador():
             "Saldo R$ Pedido",
             "Pré-nota R$ Pedido",
             "Não Faturado R$ Pedido",
+            "ultima_cobranca",
         ]
 
         df = df[[c for c in ordem if c in df.columns]]
