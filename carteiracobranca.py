@@ -137,24 +137,36 @@ CAMPOS_LISTAGEM = [
 # =========================
 st.markdown("""
 <style>
-    .main {background-color: #f7f8fb;}
+    .main {background-color: var(--background-color) !important;}
     .block-container {padding-top: 1.2rem;}
 
     div[data-testid="stMetric"] {
-        background: white;
-        border: 1px solid #e8e8ef;
-        padding: 16px;
-        border-radius: 14px;
-        box-shadow: 0 2px 8px rgba(15,23,42,.04);
+        background: var(--secondary-background-color) !important;
+        border: 1px solid rgba(128,128,128,0.28) !important;
+        padding: 16px !important;
+        border-radius: 14px !important;
+        box-shadow: 0 2px 8px rgba(15,23,42,.08) !important;
+    }
+
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] div,
+    div[data-testid="stMetric"] p,
+    div[data-testid="stMetric"] span {
+        color: var(--text-color) !important;
     }
 
     .card {
-        background: white;
-        border: 1px solid #e8e8ef;
+        background: var(--secondary-background-color) !important;
+        border: 1px solid rgba(128,128,128,0.28) !important;
         border-radius: 14px;
         padding: 16px;
         margin-bottom: 12px;
-        box-shadow: 0 2px 8px rgba(15,23,42,.04);
+        box-shadow: 0 2px 8px rgba(15,23,42,.08);
+        color: var(--text-color) !important;
+    }
+
+    .card * {
+        color: var(--text-color) !important;
     }
 
     .badge {
@@ -163,7 +175,7 @@ st.markdown("""
         border-radius: 999px;
         font-size: 12px;
         font-weight: 700;
-        border: 1px solid #ddd;
+        border: 1px solid rgba(128,128,128,0.35);
     }
 
     .pendente {background:#f1f5f9;color:#334155;}
