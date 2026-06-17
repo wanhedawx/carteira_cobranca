@@ -129,6 +129,7 @@ CAMPOS_LISTAGEM = [
     "data_ultimo_upload",
     "data_cancelamento",
     "ativo",
+    "itens_json",
 ]
 
 # =========================
@@ -1912,6 +1913,14 @@ def autenticar_usuario(usuario, senha):
     return senha_secrets_valida(usuario, senha), False
 
 
+def redefinir_senha_usuario(usuario, senha_temporaria, atualizado_por):
+    salvar_senha_usuario(
+        usuario,
+        senha_temporaria,
+        forcar_troca_senha=True,
+        atualizado_por=atualizado_por
+    )
+
 def salvar_senha_usuario(usuario, senha, forcar_troca_senha, atualizado_por):
     senha_hash, salt = gerar_hash_senha(senha)
     data_evento = agora_str()
@@ -2049,6 +2058,29 @@ def montar_df_itens(itens):
 
     df = pd.DataFrame(itens)
 
+    def montar_texto_produtos(valor):
+        try:
+            if isinstance(valor, str):
+                itens_pedido = json.loads(valor or "[]")
+            else:
+                itens_pedido = valor or []
+        except Exception:
+            itens_pedido = []
+
+        textos = []
+        if isinstance(itens_pedido, list):
+            for item in itens_pedido:
+                if isinstance(item, dict):
+                    textos.append(str(item.get("codigo", "")))
+                    textos.append(str(item.get("descricao", "")))
+
+        return " ".join(t for t in textos if t and t.lower() not in ["nan", "none"])
+
+    if "itens_json" in df.columns:
+        df["produto_busca"] = df["itens_json"].apply(montar_texto_produtos)
+    else:
+        df["produto_busca"] = ""
+
     ordenar = [
         c for c in ["analista", "departamento", "dt_agendada_ordem", "status", "pedido"]
         if c in df.columns
@@ -2061,7 +2093,7 @@ def montar_df_itens(itens):
         "analista", "departamento", "fornecedor", "pedido",
         "dt_agendada", "status", "cobrancas", "ultima_cobranca",
         "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
-        "qtd_itens", "dt_agendada_ordem", "doc_id"
+        "qtd_itens", "dt_agendada_ordem", "doc_id", "produto_busca"
     ]
 
     cols = [c for c in cols if c in df.columns]
@@ -2074,10 +2106,10 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
         return df
 
     # Filtros na mesma linha.
-    # Admin: Analista | Departamento | Status | Pesquisar
-    # Analista: Pesquisar | Departamento | Status
+    # Admin: Analista | Departamento | Status | Fornecedor | Pesquisar produto
+    # Analista: Departamento | Status | Fornecedor | Pesquisar produto
     if pode_filtrar_analista and "analista" in df.columns:
-        col_analista, col_dep, col_status, col_busca = st.columns([1.1, 1.3, 1.1, 2.0])
+        col_analista, col_dep, col_status, col_fornecedor, col_busca = st.columns([1.0, 1.2, 1.0, 1.8, 1.8])
 
         with col_analista:
             analistas = ["TODOS"] + sorted(df["analista"].dropna().unique().tolist())
@@ -2090,7 +2122,7 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_analista != "TODOS":
                 df = df[df["analista"] == f_analista]
     else:
-        col_busca, col_dep, col_status = st.columns([2.0, 1.3, 1.1])
+        col_dep, col_status, col_fornecedor, col_busca = st.columns([1.2, 1.0, 1.8, 2.0])
 
     with col_dep:
         if "departamento" in df.columns:
@@ -2116,40 +2148,48 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_status != "TODOS":
                 df = df[df["status"] == f_status]
 
+    with col_fornecedor:
+        if "fornecedor" in df.columns:
+            fornecedores = sorted([
+                str(x).strip()
+                for x in df["fornecedor"].dropna().unique().tolist()
+                if str(x).strip()
+            ])
+
+            key_fornecedor = f"{key_prefix}_fornecedores"
+            if key_fornecedor in st.session_state:
+                st.session_state[key_fornecedor] = [
+                    x for x in st.session_state.get(key_fornecedor, [])
+                    if x in fornecedores
+                ]
+
+            f_fornecedores = st.multiselect(
+                "Fornecedor",
+                fornecedores,
+                key=key_fornecedor,
+                placeholder="Selecione um ou mais fornecedores"
+            )
+
+            if f_fornecedores:
+                df = df[df["fornecedor"].isin(f_fornecedores)]
+
     with col_busca:
         busca = st.text_input(
-            "Pesquisar pedido, fornecedor ou departamento",
+            "Pesquisar produto",
             key=f"{key_prefix}_busca",
-            placeholder="Ex.: LADK55, fornecedor ou departamento"
+            placeholder="Ex.: código ou descrição do produto"
         )
 
     if busca:
-        tokens = extrair_pedidos_texto(busca)
+        busca_norm = norm(busca)
 
-        if tokens:
-            pedidos_normalizados = df["pedido"].apply(norm) if "pedido" in df.columns else pd.Series([], dtype=str)
-            df_exato = df[pedidos_normalizados.isin(tokens)]
+        if busca_norm:
+            def linha_match(linha):
+                produto_n = norm(linha.get("produto_busca", ""))
 
-            if not df_exato.empty:
-                df = df_exato
-            else:
-                def linha_match(linha):
-                    pedido_n = norm(linha.get("pedido", ""))
-                    texto_linha = norm(" ".join(str(v) for v in linha.values))
+                return busca_norm in produto_n
 
-                    for token in tokens:
-                        if token == pedido_n:
-                            return True
-
-                        if token in pedido_n:
-                            return True
-
-                        if token in texto_linha:
-                            return True
-
-                    return False
-
-                df = df[df.apply(linha_match, axis=1)]
+            df = df[df.apply(linha_match, axis=1)]
 
     return df
 
@@ -2158,9 +2198,9 @@ def metricas(df):
         c1, c2, c3, c4, c5, c6 = st.columns(6)
 
         c1.metric("Ativos em atraso", 0)
-        c2.metric("Saldo CMV", "R$ 0,00")
-        c3.metric("Pré-nota CMV", "R$ 0,00")
-        c4.metric("Não Faturado CMV", "R$ 0,00")
+        c2.metric("Saldo CMV", "0,00")
+        c3.metric("Pré-nota CMV", "0,00")
+        c4.metric("Não Faturado CMV", "0,00")
         c5.metric("Cobrado 3x", 0)
         c6.metric("Acionar comprador", 0)
         return
@@ -3041,10 +3081,9 @@ def tela_senhas_admin():
             st.error("As senhas não conferem.")
             return
 
-        salvar_senha_usuario(
+        redefinir_senha_usuario(
             usuario_reset,
             senha_temporaria,
-            forcar_troca_senha=True,
             atualizado_por=usuario_logado
         )
 
@@ -3058,6 +3097,7 @@ def tela_senhas_admin():
     st.write("2. O usuário entra com essa senha temporária.")
     st.write("3. Antes de acessar a carteira, o sistema obriga o usuário a escolher uma nova senha.")
     st.write("4. A partir daí, o usuário entra com a senha nova.")
+
 
 # =========================
 # ROTEAMENTO
