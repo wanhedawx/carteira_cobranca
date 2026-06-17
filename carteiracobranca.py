@@ -616,6 +616,43 @@ def historico_doc(doc_id):
         st.stop()
 
 
+def buscar_obs_ultima_cobranca(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id)
+            doc_id,
+            observacao
+        from carteira_historico
+        where doc_id in :ids
+          and coalesce(observacao, '') <> ''
+          and tipo in (
+              'COBRANCA',
+              'NECESSARIO_ACIONAR_COMPRADOR',
+              'COMPRADOR_ACIONADO'
+          )
+        order by doc_id, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        return {
+            r["doc_id"]: r.get("observacao", "")
+            for r in rows
+        }
+
+    except Exception as e:
+        st.error("Erro ao buscar observações de cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
 def montar_linha_banco(dados):
     linha = {}
 
@@ -2102,9 +2139,13 @@ def montar_exportacao_acionar_comprador():
         tamanho_lote=10000
     )
 
+    obs_por_doc = buscar_obs_ultima_cobranca([p.get("doc_id") for p in pedidos])
+
     linhas = []
 
     for pedido in pedidos:
+        obs_cobranca = obs_por_doc.get(pedido.get("doc_id"), "")
+
         try:
             itens_pedido = json.loads(pedido.get("itens_json") or "[]")
         except Exception:
@@ -2125,6 +2166,7 @@ def montar_exportacao_acionar_comprador():
                 "data_prev_entrega": pedido.get("dt_agendada", ""),
                 "status": pedido.get("status", ""),
                 "cobrancas": pedido.get("cobrancas", 0),
+                "Obs Cobrança": obs_cobranca,
                 "Cod_Prod": "",
                 "Desc_Prod": "",
                 "Saldo QTD": "",
@@ -2147,6 +2189,7 @@ def montar_exportacao_acionar_comprador():
                     "data_prev_entrega": pedido.get("dt_agendada", ""),
                     "status": pedido.get("status", ""),
                     "cobrancas": pedido.get("cobrancas", 0),
+                    "Obs Cobrança": obs_cobranca,
                     "Cod_Prod": item.get("codigo", ""),
                     "Desc_Prod": item.get("descricao", ""),
                     "Saldo QTD": valores["saldo_qtd"],
@@ -2191,6 +2234,7 @@ def montar_exportacao_acionar_comprador():
             "data_prev_entrega",
             "status",
             "cobrancas",
+            "Obs Cobrança",
             "ultima_cobranca",
             "Cod_Prod",
             "Desc_Prod",
