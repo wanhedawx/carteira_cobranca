@@ -3112,16 +3112,6 @@ def tela_senhas_admin():
             atualizado_por=usuario_logado
         )
 
-        st.success(
-            f"Senha de {usuario_reset} redefinida. No próximo login, o usuário terá que escolher uma nova senha."
-        )
-
-    st.divider()
-    st.subheader("Como funciona")
-    st.write("1. O Admin redefine a senha temporária do usuário.")
-    st.write("2. O usuário entra com essa senha temporária.")
-    st.write("3. Antes de acessar a carteira, o sistema obriga o usuário a escolher uma nova senha.")
-    st.write("4. A partir daí, o usuário entra com a senha nova.")
 
 
 # =========================
