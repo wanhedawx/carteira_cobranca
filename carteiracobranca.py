@@ -280,6 +280,51 @@ def formatar_moeda(valor):
         return str(valor or "R$ 0,00")
 
 
+def formatar_nome_coluna(coluna):
+    mapa = {
+        "pedido": "Pedido",
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "fornecedor": "Fornecedor",
+        "data_prev_entrega": "Data Prev Entrega",
+        "dt_agendada": "Data Prev Entrega",
+        "dt_agendada_ordem": "Data Ordem",
+        "status": "Status",
+        "cobrancas": "Cobranças",
+        "ultima_cobranca": "Última Cobrança",
+        "saldo_cmv": "Saldo CMV",
+        "pre_nota_cmv": "Pré-nota CMV",
+        "nao_faturado_cmv": "Não Faturado CMV",
+        "data_primeira_entrada": "Data Primeira Entrada",
+        "data_ultimo_upload": "Data Último Upload",
+        "data_cancelamento": "Data Cancelamento",
+        "ativo": "Ativo",
+        "doc_id": "Doc ID",
+    }
+
+    if coluna in mapa:
+        return mapa[coluna]
+
+    texto = str(coluna).replace("_", " ").strip()
+
+    if not texto:
+        return texto
+
+    return texto[:1].upper() + texto[1:]
+
+
+def formatar_colunas_tela(df):
+    if df is None or df.empty:
+        return df
+
+    df_formatado = df.copy()
+    df_formatado = df_formatado.rename(
+        columns={col: formatar_nome_coluna(col) for col in df_formatado.columns}
+    )
+
+    return df_formatado
+
+
 def formatar_df_moeda(df):
     if df is None or df.empty:
         return df
@@ -290,7 +335,7 @@ def formatar_df_moeda(df):
         if col in df_formatado.columns:
             df_formatado[col] = df_formatado[col].apply(formatar_moeda)
 
-    return df_formatado
+    return formatar_colunas_tela(df_formatado)
 
 
 def status_por_cobranca(qtd, comprador_acionado=False):
@@ -2121,9 +2166,10 @@ def montar_exportacao_acionar_comprador():
 
 def gerar_excel_bytes(df):
     output = io.BytesIO()
+    df_excel = formatar_colunas_tela(df)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Acionar Comprador")
+        df_excel.to_excel(writer, index=False, sheet_name="Acionar Comprador")
 
     output.seek(0)
     return output.getvalue()
