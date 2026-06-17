@@ -2606,8 +2606,8 @@ def tela_regras():
 # =========================
 # ROTEAMENTO
 # =========================
-st.title("📋 Cobrança de Carteira")
-st.caption("Controle de pedidos atrasados por analista, departamento, comprador e status de cobrança.")
+st.title("Cobrança de Carteira")
+st.caption("Controle de pedidos atrasados.")
 
 if usuario_logado == "Admin":
     pagina = st.radio(
