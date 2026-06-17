@@ -1922,6 +1922,12 @@ def metricas(df):
 def configurar_colunas_e_processar(df, origem_texto):
     df.columns = [str(c).strip() for c in df.columns]
 
+    st.info(
+        f"Regra aplicada: primeiro retira produtos com **DT Agendamento preenchida**. "
+        f"Depois considera somente pedidos sem agendamento com menor Data Prev Entrega até "
+        f"**{data_br(data_limite_cobranca())}**."
+    )
+
     st.subheader("Prévia do arquivo")
     st.caption(origem_texto)
     st.dataframe(df.head(30), use_container_width=True)
@@ -2178,13 +2184,14 @@ def montar_exportacao_acionar_comprador():
 
     if not df.empty:
         ordem = [
-            "pedido",
             "analista",
             "departamento",
             "fornecedor",
+            "pedido",
             "data_prev_entrega",
             "status",
             "cobrancas",
+            "ultima_cobranca",
             "Cod_Prod",
             "Desc_Prod",
             "Saldo QTD",
@@ -2196,10 +2203,20 @@ def montar_exportacao_acionar_comprador():
             "Saldo R$ Pedido",
             "Pré-nota R$ Pedido",
             "Não Faturado R$ Pedido",
-            "ultima_cobranca",
         ]
 
         df = df[[c for c in ordem if c in df.columns]]
+
+        df = df.rename(columns={
+            "analista": "Analista",
+            "departamento": "Departamento",
+            "fornecedor": "Fornecedor",
+            "pedido": "Pedido",
+            "data_prev_entrega": "Data Prev Entrega",
+            "status": "Status",
+            "cobrancas": "Cobranças",
+            "ultima_cobranca": "Última Cobrança",
+        })
 
     return df
 
@@ -2223,7 +2240,7 @@ def tela_exportar_acionar_comprador():
         return
 
     resumo_pedidos_export = (
-        df_export.groupby("pedido", dropna=False)
+        df_export.groupby("Pedido", dropna=False)
         .agg({
             "Saldo R$ Pedido": "first",
             "Pré-nota R$ Pedido": "first",
@@ -2250,7 +2267,7 @@ def tela_exportar_acionar_comprador():
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Linhas de itens", len(df_export))
-    c2.metric("Pedidos", df_export["pedido"].nunique())
+    c2.metric("Pedidos", df_export["Pedido"].nunique())
     c3.metric("Saldo CMV", formatar_moeda(total_saldo_pedido))
     c4.metric("Pré-nota CMV", formatar_moeda(total_pre_nota_pedido))
     c5.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado_pedido))
