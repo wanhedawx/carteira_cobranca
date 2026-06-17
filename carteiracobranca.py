@@ -2106,10 +2106,10 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
         return df
 
     # Filtros na mesma linha.
-    # Admin: Analista | Departamento | Status | Fornecedor | Pesquisar produto
-    # Analista: Departamento | Status | Fornecedor | Pesquisar produto
+    # Admin: Analista | Departamento | Status | Fornecedor | Pesquisar pedido
+    # Analista: Departamento | Status | Fornecedor | Pesquisar pedido
     if pode_filtrar_analista and "analista" in df.columns:
-        col_analista, col_dep, col_status, col_fornecedor, col_busca = st.columns([1.0, 1.2, 1.0, 1.8, 1.8])
+        col_analista, col_dep, col_status, col_fornecedor, col_busca = st.columns([1.0, 1.6, 1.0, 1.8, 1.8])
 
         with col_analista:
             analistas = ["TODOS"] + sorted(df["analista"].dropna().unique().tolist())
@@ -2122,19 +2122,32 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_analista != "TODOS":
                 df = df[df["analista"] == f_analista]
     else:
-        col_dep, col_status, col_fornecedor, col_busca = st.columns([1.2, 1.0, 1.8, 2.0])
+        col_dep, col_status, col_fornecedor, col_busca = st.columns([1.6, 1.0, 1.8, 2.0])
 
     with col_dep:
         if "departamento" in df.columns:
-            deps = ["TODOS"] + sorted(df["departamento"].dropna().unique().tolist())
-            f_dep = st.selectbox(
+            departamentos = sorted([
+                str(x).strip()
+                for x in df["departamento"].dropna().unique().tolist()
+                if str(x).strip()
+            ])
+
+            key_departamento = f"{key_prefix}_departamentos"
+            if key_departamento in st.session_state:
+                st.session_state[key_departamento] = [
+                    x for x in st.session_state.get(key_departamento, [])
+                    if x in departamentos
+                ]
+
+            f_departamentos = st.multiselect(
                 "Departamento",
-                deps,
-                key=f"{key_prefix}_departamento"
+                departamentos,
+                key=key_departamento,
+                placeholder="Selecione um ou mais departamentos"
             )
 
-            if f_dep != "TODOS":
-                df = df[df["departamento"] == f_dep]
+            if f_departamentos:
+                df = df[df["departamento"].isin(f_departamentos)]
 
     with col_status:
         if "status" in df.columns:
@@ -2175,21 +2188,16 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
 
     with col_busca:
         busca = st.text_input(
-            "Pesquisar produto",
+            "Pesquisar pedido",
             key=f"{key_prefix}_busca",
-            placeholder="Ex.: código ou descrição do produto"
+            placeholder="Ex.: LADK55"
         )
 
     if busca:
         busca_norm = norm(busca)
 
         if busca_norm:
-            def linha_match(linha):
-                produto_n = norm(linha.get("produto_busca", ""))
-
-                return busca_norm in produto_n
-
-            df = df[df.apply(linha_match, axis=1)]
+            df = df[df["pedido"].astype(str).apply(lambda x: busca_norm in norm(x))]
 
     return df
 
