@@ -2178,7 +2178,7 @@ def montar_exportacao_acionar_comprador():
 
     if not df.empty:
         ordem = [
-            "Analista"
+            "Analista",
             "Departamento",
             "Fornecedor",
             "Pedido",
