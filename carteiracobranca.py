@@ -1816,21 +1816,31 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
 
 def metricas(df):
     if df.empty:
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+
         c1.metric("Ativos em atraso", 0)
         c2.metric("Saldo CMV", "R$ 0,00")
-        c3.metric("Cobrado 2x", 0)
-        c4.metric("Acionar comprador", 0)
+        c3.metric("Pré-nota CMV", "R$ 0,00")
+        c4.metric("Não Faturado CMV", "R$ 0,00")
+        c5.metric("Cobrado 2x", 0)
+        c6.metric("Acionar comprador", 0)
         return
 
-    total = df["saldo_cmv"].sum() if "saldo_cmv" in df.columns else 0
+    total_saldo = df["saldo_cmv"].sum() if "saldo_cmv" in df.columns else 0
+    total_pre_nota = df["pre_nota_cmv"].sum() if "pre_nota_cmv" in df.columns else 0
+    total_nao_faturado = df["nao_faturado_cmv"].sum() if "nao_faturado_cmv" in df.columns else 0
 
-    c1, c2, c3, c4 = st.columns(4)
+    total_cobrado_2x = int((df["status"] == STATUS_COBRADO_2).sum()) if "status" in df.columns else 0
+    total_acionar = int((df["status"] == STATUS_ACIONAR_COMPRADOR).sum()) if "status" in df.columns else 0
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+
     c1.metric("Ativos em atraso", len(df))
-    c2.metric("Saldo CMV", formatar_moeda(total))
-    c3.metric("Cobrado 2x", int((df["status"] == STATUS_COBRADO_2).sum()))
-    c4.metric("Acionar comprador", int((df["status"] == STATUS_ACIONAR_COMPRADOR).sum()))
-
+    c2.metric("Saldo CMV", formatar_moeda(total_saldo))
+    c3.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
+    c4.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
+    c5.metric("Cobrado 2x", total_cobrado_2x)
+    c6.metric("Acionar comprador", total_acionar)
 
 def configurar_colunas_e_processar(df, origem_texto):
     df.columns = [str(c).strip() for c in df.columns]
@@ -2177,10 +2187,13 @@ def tela_carteira(analista=None):
 
     st.subheader("Pedidos em atraso para cobrar")
 
-    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_filtrado.drop(
+        columns=["doc_id", "dt_agendada_ordem", "qtd_itens"],
+        errors="ignore"
+    )
+
     df_tela = df_tela.rename(columns={
         "dt_agendada": "data_prev_entrega",
-        "qtd_itens": "qtd_itens_sem_agendamento",
     })
 
     st.dataframe(
@@ -2435,10 +2448,13 @@ def tela_fora_atraso():
 
     st.metric("Fora do atraso", len(df_filtrado))
 
-    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_filtrado.drop(
+        columns=["doc_id", "dt_agendada_ordem", "qtd_itens"],
+        errors="ignore"
+    )
+
     df_tela = df_tela.rename(columns={
         "dt_agendada": "data_prev_entrega",
-        "qtd_itens": "qtd_itens_sem_agendamento",
     })
 
     st.dataframe(
@@ -2469,10 +2485,13 @@ def tela_cancelados():
 
     st.metric("Retirados da conta", len(df_filtrado))
 
-    df_tela = df_filtrado.drop(columns=["doc_id", "dt_agendada_ordem"], errors="ignore")
+    df_tela = df_filtrado.drop(
+        columns=["doc_id", "dt_agendada_ordem", "qtd_itens"],
+        errors="ignore"
+    )
+
     df_tela = df_tela.rename(columns={
         "dt_agendada": "data_prev_entrega",
-        "qtd_itens": "qtd_itens_sem_agendamento",
     })
 
     st.dataframe(
