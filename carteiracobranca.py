@@ -1922,12 +1922,6 @@ def metricas(df):
 def configurar_colunas_e_processar(df, origem_texto):
     df.columns = [str(c).strip() for c in df.columns]
 
-    st.info(
-        f"Regra aplicada: primeiro retira produtos com **DT Agendamento preenchida**. "
-        f"Depois considera somente pedidos sem agendamento com menor Data Prev Entrega até "
-        f"**{data_br(data_limite_cobranca())}**."
-    )
-
     st.subheader("Prévia do arquivo")
     st.caption(origem_texto)
     st.dataframe(df.head(30), use_container_width=True)
