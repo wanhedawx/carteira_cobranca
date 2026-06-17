@@ -1996,6 +1996,56 @@ def configurar_colunas_e_processar(df, origem_texto):
         c11.metric("Reativados", resultado["reativados"])
 
 
+def calcular_valores_item_exportacao(item):
+    saldo_item = converter_numero(item.get("saldo_cmv_item", 0))
+    pre_item = converter_numero(item.get("pre_nota_cmv_item", 0))
+    nao_faturado_item = converter_numero(item.get("nao_faturado_cmv_item", 0))
+
+    saldo_qtd = converter_numero(item.get("saldo_qtd_item", item.get("qtd", 0)))
+    pre_qtd = converter_numero(item.get("pre_nota_qtd_item", 0))
+    nao_faturado_qtd = converter_numero(item.get("nao_faturado_qtd_item", 0))
+
+    base_qtd = saldo_qtd
+
+    if base_qtd <= 0:
+        base_qtd = pre_qtd + nao_faturado_qtd
+
+    soma_valores = pre_item + nao_faturado_item
+
+    precisa_recalcular = False
+
+    if saldo_item > 0:
+        if abs(soma_valores - saldo_item) > 0.05:
+            precisa_recalcular = True
+
+        if pre_qtd > 0 and pre_item <= 0:
+            precisa_recalcular = True
+
+        if nao_faturado_qtd > 0 and nao_faturado_item <= 0:
+            precisa_recalcular = True
+
+    if precisa_recalcular and saldo_item > 0 and base_qtd > 0:
+        pre_item = saldo_item * (pre_qtd / base_qtd) if pre_qtd > 0 else 0
+        nao_faturado_item = saldo_item * (nao_faturado_qtd / base_qtd) if nao_faturado_qtd > 0 else 0
+
+        if pre_qtd <= 0 and nao_faturado_qtd <= 0:
+            pre_item = 0
+            nao_faturado_item = saldo_item
+
+    elif saldo_item > 0 and pre_item <= 0 and nao_faturado_item <= 0:
+        pre_item = 0
+        nao_faturado_item = saldo_item
+
+    return {
+        "saldo_item": round(float(saldo_item), 2),
+        "pre_item": round(float(pre_item), 2),
+        "nao_faturado_item": round(float(nao_faturado_item), 2),
+        "saldo_qtd": saldo_qtd,
+        "pre_qtd": pre_qtd,
+        "nao_faturado_qtd": nao_faturado_qtd,
+    }
+
+
 def montar_exportacao_acionar_comprador():
     pedidos = buscar_docs(
         ativos=True,
@@ -2012,8 +2062,14 @@ def montar_exportacao_acionar_comprador():
         except Exception:
             itens_pedido = []
 
+        linhas_pedido = []
+
         if not itens_pedido:
-            linhas.append({
+            saldo_pedido = converter_numero(pedido.get("saldo_cmv", 0))
+            pre_pedido = converter_numero(pedido.get("pre_nota_cmv", 0))
+            nao_faturado_pedido = converter_numero(pedido.get("nao_faturado_cmv", 0))
+
+            linhas_pedido.append({
                 "pedido": pedido.get("pedido", ""),
                 "analista": pedido.get("analista", ""),
                 "departamento": pedido.get("departamento", ""),
@@ -2026,38 +2082,53 @@ def montar_exportacao_acionar_comprador():
                 "Saldo QTD": "",
                 "Não Faturado QTD": "",
                 "Pré-nota QTD": "",
-                "Saldo R$ Item": pedido.get("saldo_cmv", 0),
-                "Pré-nota R$ Item": pedido.get("pre_nota_cmv", 0),
-                "Não Faturado R$ Item": pedido.get("nao_faturado_cmv", 0),
-                "Saldo R$ Pedido": pedido.get("saldo_cmv", 0),
-                "Pré-nota R$ Pedido": pedido.get("pre_nota_cmv", 0),
-                "Não Faturado R$ Pedido": pedido.get("nao_faturado_cmv", 0),
+                "Saldo R$ Item": saldo_pedido,
+                "Pré-nota R$ Item": pre_pedido,
+                "Não Faturado R$ Item": nao_faturado_pedido,
                 "ultima_cobranca": pedido.get("ultima_cobranca", ""),
             })
-            continue
+        else:
+            for item in itens_pedido:
+                valores = calcular_valores_item_exportacao(item)
 
-        for item in itens_pedido:
-            linhas.append({
-                "pedido": pedido.get("pedido", ""),
-                "analista": pedido.get("analista", ""),
-                "departamento": pedido.get("departamento", ""),
-                "fornecedor": pedido.get("fornecedor", ""),
-                "data_prev_entrega": pedido.get("dt_agendada", ""),
-                "status": pedido.get("status", ""),
-                "cobrancas": pedido.get("cobrancas", 0),
-                "Cod_Prod": item.get("codigo", ""),
-                "Desc_Prod": item.get("descricao", ""),
-                "Saldo QTD": item.get("saldo_qtd_item", 0),
-                "Não Faturado QTD": item.get("nao_faturado_qtd_item", 0),
-                "Pré-nota QTD": item.get("pre_nota_qtd_item", 0),
-                "Saldo R$ Item": item.get("saldo_cmv_item", 0),
-                "Pré-nota R$ Item": item.get("pre_nota_cmv_item", 0),
-                "Não Faturado R$ Item": item.get("nao_faturado_cmv_item", 0),
-                "Saldo R$ Pedido": pedido.get("saldo_cmv", 0),
-                "Pré-nota R$ Pedido": pedido.get("pre_nota_cmv", 0),
-                "Não Faturado R$ Pedido": pedido.get("nao_faturado_cmv", 0),
-                "ultima_cobranca": pedido.get("ultima_cobranca", ""),
-            })
+                linhas_pedido.append({
+                    "pedido": pedido.get("pedido", ""),
+                    "analista": pedido.get("analista", ""),
+                    "departamento": pedido.get("departamento", ""),
+                    "fornecedor": pedido.get("fornecedor", ""),
+                    "data_prev_entrega": pedido.get("dt_agendada", ""),
+                    "status": pedido.get("status", ""),
+                    "cobrancas": pedido.get("cobrancas", 0),
+                    "Cod_Prod": item.get("codigo", ""),
+                    "Desc_Prod": item.get("descricao", ""),
+                    "Saldo QTD": valores["saldo_qtd"],
+                    "Não Faturado QTD": valores["nao_faturado_qtd"],
+                    "Pré-nota QTD": valores["pre_qtd"],
+                    "Saldo R$ Item": valores["saldo_item"],
+                    "Pré-nota R$ Item": valores["pre_item"],
+                    "Não Faturado R$ Item": valores["nao_faturado_item"],
+                    "ultima_cobranca": pedido.get("ultima_cobranca", ""),
+                })
+
+        saldo_pedido_calculado = round(sum(converter_numero(l.get("Saldo R$ Item", 0)) for l in linhas_pedido), 2)
+        pre_pedido_calculado = round(sum(converter_numero(l.get("Pré-nota R$ Item", 0)) for l in linhas_pedido), 2)
+        nao_faturado_pedido_calculado = round(sum(converter_numero(l.get("Não Faturado R$ Item", 0)) for l in linhas_pedido), 2)
+
+        # Se os itens antigos ainda não tiverem valores suficientes, usa o total do pedido salvo no banco.
+        if saldo_pedido_calculado <= 0:
+            saldo_pedido_calculado = converter_numero(pedido.get("saldo_cmv", 0))
+
+        if pre_pedido_calculado <= 0 and converter_numero(pedido.get("pre_nota_cmv", 0)) > 0:
+            pre_pedido_calculado = converter_numero(pedido.get("pre_nota_cmv", 0))
+
+        if nao_faturado_pedido_calculado <= 0 and converter_numero(pedido.get("nao_faturado_cmv", 0)) > 0:
+            nao_faturado_pedido_calculado = converter_numero(pedido.get("nao_faturado_cmv", 0))
+
+        for linha in linhas_pedido:
+            linha["Saldo R$ Pedido"] = saldo_pedido_calculado
+            linha["Pré-nota R$ Pedido"] = pre_pedido_calculado
+            linha["Não Faturado R$ Pedido"] = nao_faturado_pedido_calculado
+            linhas.append(linha)
 
     df = pd.DataFrame(linhas)
 
@@ -2088,7 +2159,6 @@ def montar_exportacao_acionar_comprador():
 
     return df
 
-
 def gerar_excel_bytes(df):
     output = io.BytesIO()
 
@@ -2113,21 +2183,19 @@ def tela_exportar_acionar_comprador():
         st.info("Nenhum pedido com status ACIONAR COMPRADOR no momento.")
         return
 
-    df_pedidos_unicos = df_export.drop_duplicates(subset=["pedido"])
-
     total_saldo_pedido = (
-        df_pedidos_unicos["Saldo R$ Pedido"].sum()
-        if "Saldo R$ Pedido" in df_pedidos_unicos.columns
+        df_export["Saldo R$ Item"].apply(converter_numero).sum()
+        if "Saldo R$ Item" in df_export.columns
         else 0
     )
     total_pre_nota_pedido = (
-        df_pedidos_unicos["Pré-nota R$ Pedido"].sum()
-        if "Pré-nota R$ Pedido" in df_pedidos_unicos.columns
+        df_export["Pré-nota R$ Item"].apply(converter_numero).sum()
+        if "Pré-nota R$ Item" in df_export.columns
         else 0
     )
     total_nao_faturado_pedido = (
-        df_pedidos_unicos["Não Faturado R$ Pedido"].sum()
-        if "Não Faturado R$ Pedido" in df_pedidos_unicos.columns
+        df_export["Não Faturado R$ Item"].apply(converter_numero).sum()
+        if "Não Faturado R$ Item" in df_export.columns
         else 0
     )
 
