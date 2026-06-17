@@ -8,6 +8,7 @@ import hashlib
 import io
 import re
 import json
+import secrets as py_secrets
 
 # =========================
 # CONFIGURAÇÕES
@@ -478,6 +479,19 @@ def inicializar_banco():
 
     alter table carteira_pedidos
     add column if not exists itens_json text default '[]';
+
+    create table if not exists app_usuarios (
+        usuario text primary key,
+        senha_hash text not null,
+        senha_salt text not null,
+        forcar_troca_senha boolean default false,
+        ativo boolean default true,
+        atualizado_em text,
+        atualizado_por text
+    );
+
+    create index if not exists idx_app_usuarios_ativo
+    on app_usuarios (ativo);
 
     create index if not exists idx_carteira_ativo_analista
     on carteira_pedidos (ativo, analista);
@@ -1838,15 +1852,139 @@ def processar_carteira(df, usuario):
 
 
 # =========================
-# LOGIN
+# LOGIN E SENHAS
 # =========================
-def senha_valida(usuario, senha):
+def usuario_chave(usuario):
+    return "admin" if usuario == "Admin" else str(usuario).lower().strip()
+
+
+def gerar_hash_senha(senha, salt=None):
+    if salt is None:
+        salt = py_secrets.token_hex(16)
+
+    senha_hash = hashlib.sha256((salt + str(senha)).encode("utf-8")).hexdigest()
+    return senha_hash, salt
+
+
+def buscar_usuario_senha(usuario):
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("""
+                    select usuario, senha_hash, senha_salt, forcar_troca_senha, ativo
+                    from app_usuarios
+                    where usuario = :usuario
+                """),
+                {"usuario": usuario_chave(usuario)}
+            ).mappings().first()
+
+            return dict(row) if row else None
+
+    except Exception as e:
+        st.error("Erro ao consultar senha do usuário.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def senha_secrets_valida(usuario, senha):
     if "app_passwords" in st.secrets:
         senhas = dict(st.secrets["app_passwords"])
-        key = "admin" if usuario == "Admin" else usuario.lower()
-        return senha == senhas.get(key, "")
+        return senha == senhas.get(usuario_chave(usuario), "")
 
     return senha == "1234"
+
+
+def autenticar_usuario(usuario, senha):
+    registro = buscar_usuario_senha(usuario)
+
+    if registro:
+        if not bool(registro.get("ativo", True)):
+            return False, False
+
+        senha_hash, _ = gerar_hash_senha(senha, registro.get("senha_salt", ""))
+
+        if senha_hash == registro.get("senha_hash"):
+            return True, bool(registro.get("forcar_troca_senha", False))
+
+        return False, False
+
+    return senha_secrets_valida(usuario, senha), False
+
+
+def salvar_senha_usuario(usuario, senha, forcar_troca_senha, atualizado_por):
+    senha_hash, salt = gerar_hash_senha(senha)
+    data_evento = agora_str()
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    insert into app_usuarios (
+                        usuario, senha_hash, senha_salt, forcar_troca_senha,
+                        ativo, atualizado_em, atualizado_por
+                    )
+                    values (
+                        :usuario, :senha_hash, :senha_salt, :forcar_troca_senha,
+                        true, :atualizado_em, :atualizado_por
+                    )
+                    on conflict (usuario) do update set
+                        senha_hash = excluded.senha_hash,
+                        senha_salt = excluded.senha_salt,
+                        forcar_troca_senha = excluded.forcar_troca_senha,
+                        ativo = true,
+                        atualizado_em = excluded.atualizado_em,
+                        atualizado_por = excluded.atualizado_por
+                """),
+                {
+                    "usuario": usuario_chave(usuario),
+                    "senha_hash": senha_hash,
+                    "senha_salt": salt,
+                    "forcar_troca_senha": bool(forcar_troca_senha),
+                    "atualizado_em": data_evento,
+                    "atualizado_por": atualizado_por,
+                }
+            )
+
+    except Exception as e:
+        st.error("Erro ao salvar a senha no banco.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def tela_trocar_senha_obrigatoria():
+    st.title("Definir nova senha")
+    st.warning("Sua senha foi redefinida pelo Admin. Escolha uma nova senha para continuar.")
+
+    with st.form("trocar_senha_obrigatoria"):
+        nova_senha = st.text_input("Nova senha", type="password")
+        confirmar_senha = st.text_input("Confirmar nova senha", type="password")
+        salvar = st.form_submit_button("Salvar nova senha", use_container_width=True, type="primary")
+
+    if salvar:
+        if len(nova_senha.strip()) < 4:
+            st.error("A senha precisa ter pelo menos 4 caracteres.")
+            return
+
+        if nova_senha != confirmar_senha:
+            st.error("As senhas não conferem.")
+            return
+
+        salvar_senha_usuario(
+            st.session_state.get("usuario", ""),
+            nova_senha,
+            forcar_troca_senha=False,
+            atualizado_por=st.session_state.get("usuario", "")
+        )
+
+        st.session_state["precisa_trocar_senha"] = False
+        st.success("Senha alterada com sucesso.")
+        st.rerun()
+
+    if st.button("Sair"):
+        st.session_state.clear()
+        st.rerun()
 
 
 def tela_login():
@@ -1859,9 +1997,12 @@ def tela_login():
         entrar = st.form_submit_button("Entrar", use_container_width=True)
 
     if entrar:
-        if senha_valida(usuario, senha):
+        login_ok, precisa_trocar = autenticar_usuario(usuario, senha)
+
+        if login_ok:
             st.session_state["logado"] = True
             st.session_state["usuario"] = usuario
+            st.session_state["precisa_trocar_senha"] = bool(precisa_trocar)
             st.rerun()
         else:
             st.error("Senha incorreta.")
@@ -1870,8 +2011,15 @@ def tela_login():
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 
+if "precisa_trocar_senha" not in st.session_state:
+    st.session_state["precisa_trocar_senha"] = False
+
 if not st.session_state["logado"]:
     tela_login()
+    st.stop()
+
+if st.session_state.get("precisa_trocar_senha"):
+    tela_trocar_senha_obrigatoria()
     st.stop()
 
 usuario_logado = st.session_state["usuario"]
@@ -2870,6 +3018,47 @@ def tela_regras():
         st.markdown(f"**{analista}**: {', '.join(deps)}")
 
 
+
+
+def tela_senhas_admin():
+    st.header("Redefinir senha")
+    st.caption("O Admin define uma senha temporária. No próximo login, o usuário será obrigado a escolher uma nova senha.")
+
+    usuarios = list(ANALISTAS.keys())
+
+    with st.form("form_redefinir_senha"):
+        usuario_reset = st.selectbox("Usuário", usuarios)
+        senha_temporaria = st.text_input("Senha temporária", type="password")
+        confirmar_senha_temporaria = st.text_input("Confirmar senha temporária", type="password")
+        redefinir = st.form_submit_button("Redefinir senha", use_container_width=True, type="primary")
+
+    if redefinir:
+        if len(senha_temporaria.strip()) < 4:
+            st.error("A senha temporária precisa ter pelo menos 4 caracteres.")
+            return
+
+        if senha_temporaria != confirmar_senha_temporaria:
+            st.error("As senhas não conferem.")
+            return
+
+        salvar_senha_usuario(
+            usuario_reset,
+            senha_temporaria,
+            forcar_troca_senha=True,
+            atualizado_por=usuario_logado
+        )
+
+        st.success(
+            f"Senha de {usuario_reset} redefinida. No próximo login, o usuário terá que escolher uma nova senha."
+        )
+
+    st.divider()
+    st.subheader("Como funciona")
+    st.write("1. O Admin redefine a senha temporária do usuário.")
+    st.write("2. O usuário entra com essa senha temporária.")
+    st.write("3. Antes de acessar a carteira, o sistema obriga o usuário a escolher uma nova senha.")
+    st.write("4. A partir daí, o usuário entra com a senha nova.")
+
 # =========================
 # ROTEAMENTO
 # =========================
@@ -2879,7 +3068,7 @@ st.caption("Controle de pedidos atrasados.")
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Regras"],
+        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Senhas", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -2892,6 +3081,9 @@ if usuario_logado == "Admin":
 
     elif pagina == "Exportar Comprador":
         tela_exportar_acionar_comprador()
+
+    elif pagina == "Senhas":
+        tela_senhas_admin()
 
     elif pagina == "Regras":
         tela_regras()
