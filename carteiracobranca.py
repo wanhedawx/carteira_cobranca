@@ -2708,6 +2708,11 @@ def tela_carteira(analista=None):
         height=330
     )
 
+    # Admin só consulta/exporta a carteira geral.
+    # A tela de registrar cobrança aparece apenas para os analistas.
+    if analista is None:
+        return
+
     st.subheader("Registrar cobrança")
 
     if df_filtrado.empty:
