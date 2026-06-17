@@ -280,51 +280,6 @@ def formatar_moeda(valor):
         return str(valor or "R$ 0,00")
 
 
-def formatar_nome_coluna(coluna):
-    mapa = {
-        "pedido": "Pedido",
-        "analista": "Analista",
-        "departamento": "Departamento",
-        "fornecedor": "Fornecedor",
-        "data_prev_entrega": "Data Prev Entrega",
-        "dt_agendada": "Data Prev Entrega",
-        "dt_agendada_ordem": "Data Ordem",
-        "status": "Status",
-        "cobrancas": "Cobranças",
-        "ultima_cobranca": "Última Cobrança",
-        "saldo_cmv": "Saldo CMV",
-        "pre_nota_cmv": "Pré-nota CMV",
-        "nao_faturado_cmv": "Não Faturado CMV",
-        "data_primeira_entrada": "Data Primeira Entrada",
-        "data_ultimo_upload": "Data Último Upload",
-        "data_cancelamento": "Data Cancelamento",
-        "ativo": "Ativo",
-        "doc_id": "Doc ID",
-    }
-
-    if coluna in mapa:
-        return mapa[coluna]
-
-    texto = str(coluna).replace("_", " ").strip()
-
-    if not texto:
-        return texto
-
-    return texto[:1].upper() + texto[1:]
-
-
-def formatar_colunas_tela(df):
-    if df is None or df.empty:
-        return df
-
-    df_formatado = df.copy()
-    df_formatado = df_formatado.rename(
-        columns={col: formatar_nome_coluna(col) for col in df_formatado.columns}
-    )
-
-    return df_formatado
-
-
 def formatar_df_moeda(df):
     if df is None or df.empty:
         return df
@@ -335,7 +290,7 @@ def formatar_df_moeda(df):
         if col in df_formatado.columns:
             df_formatado[col] = df_formatado[col].apply(formatar_moeda)
 
-    return formatar_colunas_tela(df_formatado)
+    return df_formatado
 
 
 def status_por_cobranca(qtd, comprador_acionado=False):
@@ -1143,6 +1098,65 @@ def encontrar_coluna_fixa(df, nomes_possiveis):
     return None
 
 
+
+def encontrar_coluna_valor_cmv(df, tipo):
+    """
+    Encontra coluna de VALOR R$ / CMV, sem confundir com QTD.
+    tipo: saldo | pre_nota | nao_faturado
+    """
+    mapa = {norm(c): c for c in df.columns}
+
+    if tipo == "saldo":
+        termos_obrigatorios = [["SALDO"]]
+        termos_preferidos = ["CMV", "R"]
+    elif tipo == "pre_nota":
+        termos_obrigatorios = [["PRE", "NOTA"]]
+        termos_preferidos = ["CMV", "R"]
+    else:
+        termos_obrigatorios = [["NAO", "FATURADO"], ["NAO", "FATUADO"], ["NAO", "FAT"]]
+        termos_preferidos = ["CMV", "R"]
+
+    def proibida(col_n):
+        bloqueios = ["QTD", "QTDE", "QUANT", "QUANTIDADE", "DATA", "DT", "COD", "DESC"]
+        return any(b in col_n for b in bloqueios)
+
+    candidatos = []
+
+    for col_n, col_original in mapa.items():
+        if proibida(col_n):
+            continue
+
+        bate_tipo = False
+        for grupo in termos_obrigatorios:
+            if all(t in col_n for t in grupo):
+                bate_tipo = True
+                break
+
+        if not bate_tipo:
+            continue
+
+        score = 0
+        for pref in termos_preferidos:
+            if pref in col_n:
+                score += 10
+
+        if "CMV" in col_n:
+            score += 20
+        if "R" in col_n:
+            score += 8
+        if "VALOR" in col_n:
+            score += 8
+        if "VLR" in col_n:
+            score += 8
+
+        candidatos.append((score, col_original))
+
+    if not candidatos:
+        return None
+
+    candidatos.sort(key=lambda x: x[0], reverse=True)
+    return candidatos[0][1]
+
 def encontrar_colunas_itens(df):
     col_codigo = encontrar_coluna_fixa(df, [
         "Cod_Prod", "Cod Prod", "Código", "Codigo", "Cód", "Cod",
@@ -1296,45 +1310,64 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
 
 
 def mapear_colunas_fixas(df):
+    col_pedido = encontrar_coluna_fixa(df, [
+        "Pedido", "N Pedido", "Nº Pedido", "Num Pedido",
+        "Número Pedido", "Numero Pedido", "OC", "Ordem"
+    ])
+    col_departamento = encontrar_coluna_fixa(df, [
+        "Departamento", "Depto", "Setor"
+    ])
+    col_fornecedor = encontrar_coluna_fixa(df, [
+        "Fornecedor", "Forneceor", "Razão Social", "Razao Social", "Vendor"
+    ])
+    col_data_prev = encontrar_coluna_fixa(df, [
+        "Data Prev Entrega", "Data Prev. Entrega", "Dt Prev Entrega",
+        "DT Prev Entrega", "Dt Prev Entr", "DT Prev Entr", "Prev Entrega",
+        "Previsão Entrega", "Previsao Entrega", "Data Prevista Entrega",
+        "Menor Data Prev Entrega"
+    ])
+    col_dt_agendamento = encontrar_coluna_fixa(df, [
+        "DT Agendamento", "Dt Agendamento", "Data Agendamento",
+        "Data Agendada", "DT Agendada", "Dt Agendada",
+        "DT Agendando", "Dt Agendando", "Data Agendando",
+        "Agendamento", "Agendada", "Agendando", "Dt Agend", "DT Agend"
+    ])
+
+    # Valores R$/CMV: procura sem confundir com colunas QTD.
+    col_saldo = encontrar_coluna_valor_cmv(df, "saldo") or encontrar_coluna_fixa(df, [
+        "Saldo R$ (CMV)", "Saldo R$(CMV)", "Saldo R CMV", "Saldo CMV",
+        "Saldo R$", "Saldo Valor", "Valor Saldo", "Vlr Saldo"
+    ])
+    col_pre_nota = encontrar_coluna_valor_cmv(df, "pre_nota") or encontrar_coluna_fixa(df, [
+        "Pré-nota R$ (CMV)", "Pre-nota R$ (CMV)",
+        "Pré Nota R$ (CMV)", "Pre Nota R$ (CMV)",
+        "Pré-Nota R$ (CMV)", "Pre-Nota R$ (CMV)",
+        "Pré-nota R$(CMV)", "Pre-nota R$(CMV)",
+        "Pré-nota CMV", "Pre-nota CMV", "Pré Nota CMV",
+        "Pre Nota CMV", "Pré-Nota CMV", "Pre-Nota CMV", "Prenota CMV",
+        "Pré-nota R$", "Pre-nota R$", "Pré Nota R$", "Pre Nota R$",
+        "Pré-nota Valor", "Pre-nota Valor", "Valor Pré-nota", "Valor Pre-nota"
+    ])
+    col_nao_faturado = encontrar_coluna_valor_cmv(df, "nao_faturado") or encontrar_coluna_fixa(df, [
+        "Não Faturado R$ (CMV)", "Nao Faturado R$ (CMV)",
+        "Não Faturado R$(CMV)", "Nao Faturado R$(CMV)",
+        "Não Faturado CMV", "Nao Faturado CMV",
+        "Não Fatuado CMV", "Nao Fatuado CMV",
+        "Nao Fat CMV", "Não Fat CMV",
+        "Não Faturado R$", "Nao Faturado R$",
+        "Não Faturado Valor", "Nao Faturado Valor",
+        "Valor Não Faturado", "Valor Nao Faturado"
+    ])
+
     colunas = {
-        "pedido": encontrar_coluna_fixa(df, [
-            "Pedido", "N Pedido", "Nº Pedido", "Num Pedido",
-            "Número Pedido", "Numero Pedido", "OC", "Ordem"
-        ]),
-        "departamento": encontrar_coluna_fixa(df, [
-            "Departamento", "Depto", "Setor"
-        ]),
-        "fornecedor": encontrar_coluna_fixa(df, [
-            "Fornecedor", "Forneceor", "Razão Social", "Razao Social", "Vendor"
-        ]),
-        "data_prev_entrega": encontrar_coluna_fixa(df, [
-            "Data Prev Entrega", "Data Prev. Entrega", "Dt Prev Entrega",
-            "DT Prev Entrega", "Dt Prev Entr", "DT Prev Entr", "Prev Entrega",
-            "Previsão Entrega", "Previsao Entrega", "Data Prevista Entrega",
-            "Menor Data Prev Entrega"
-        ]),
-        "dt_agendamento": encontrar_coluna_fixa(df, [
-            "DT Agendamento", "Dt Agendamento", "Data Agendamento",
-            "Data Agendada", "DT Agendada", "Dt Agendada",
-            "DT Agendando", "Dt Agendando", "Data Agendando",
-            "Agendamento", "Agendada", "Agendando", "Dt Agend", "DT Agend"
-        ]),
-        "saldo_cmv": encontrar_coluna_fixa(df, [
-            "Saldo R$ (CMV)", "Saldo R CMV", "Saldo CMV"
-        ]),
-        "pre_nota_cmv": encontrar_coluna_fixa(df, [
-            "Pré-nota R$ (CMV)", "Pre-nota R$ (CMV)",
-            "Pré Nota R$ (CMV)", "Pre Nota R$ (CMV)",
-            "Pré-Nota R$ (CMV)", "Pre-Nota R$ (CMV)",
-            "Pré-nota CMV", "Pre-nota CMV", "Pré Nota CMV",
-            "Pre Nota CMV", "Pré-Nota CMV", "Pre-Nota CMV", "Prenota CMV"
-        ]),
-        "nao_faturado_cmv": encontrar_coluna_fixa(df, [
-            "Não Faturado R$ (CMV)", "Nao Faturado R$ (CMV)",
-            "Não Faturado CMV", "Nao Faturado CMV",
-            "Não Fatuado CMV", "Nao Fatuado CMV",
-            "Nao Fat CMV", "Não Fat CMV"
-        ]),
+        "pedido": col_pedido,
+        "departamento": col_departamento,
+        "fornecedor": col_fornecedor,
+        "data_prev_entrega": col_data_prev,
+        "dt_agendamento": col_dt_agendamento,
+        "saldo_cmv": col_saldo,
+        "pre_nota_cmv": col_pre_nota,
+        "nao_faturado_cmv": col_nao_faturado,
     }
 
     faltando = [campo for campo, coluna in colunas.items() if coluna is None]
@@ -2041,8 +2074,8 @@ def configurar_colunas_e_processar(df, origem_texto):
 
 
 def calcular_valores_item_exportacao(item):
-    # Mantém exatamente os valores que vieram da carteira.
-    # Não faz rateio por QTD, porque isso distorce Pré-nota e Não Faturado.
+    # IMPORTANTE: usa o valor R$/CMV real vindo da carteira.
+    # Não faz rateio por QTD, porque isso joga Pré-nota para zero ou para Não Faturado.
     saldo_item = converter_numero(item.get("saldo_cmv_item", 0))
     pre_item = converter_numero(item.get("pre_nota_cmv_item", 0))
     nao_faturado_item = converter_numero(item.get("nao_faturado_cmv_item", 0))
@@ -2125,9 +2158,21 @@ def montar_exportacao_acionar_comprador():
                     "ultima_cobranca": pedido.get("ultima_cobranca", ""),
                 })
 
-        saldo_pedido_calculado = round(sum(converter_numero(l.get("Saldo R$ Item", 0)) for l in linhas_pedido), 2)
-        pre_pedido_calculado = round(sum(converter_numero(l.get("Pré-nota R$ Item", 0)) for l in linhas_pedido), 2)
-        nao_faturado_pedido_calculado = round(sum(converter_numero(l.get("Não Faturado R$ Item", 0)) for l in linhas_pedido), 2)
+        # Totais do pedido vêm direto do banco, que é calculado a partir das colunas R$/CMV da carteira.
+        # Não usa soma/rateio dos itens para não zerar Pré-nota quando há Pré-nota no pedido.
+        saldo_pedido_calculado = converter_numero(pedido.get("saldo_cmv", 0))
+        pre_pedido_calculado = converter_numero(pedido.get("pre_nota_cmv", 0))
+        nao_faturado_pedido_calculado = converter_numero(pedido.get("nao_faturado_cmv", 0))
+
+        # Se for um registro antigo sem total no pedido, aí sim usa a soma dos itens como plano B.
+        if saldo_pedido_calculado <= 0:
+            saldo_pedido_calculado = round(sum(converter_numero(l.get("Saldo R$ Item", 0)) for l in linhas_pedido), 2)
+
+        if pre_pedido_calculado <= 0:
+            pre_pedido_calculado = round(sum(converter_numero(l.get("Pré-nota R$ Item", 0)) for l in linhas_pedido), 2)
+
+        if nao_faturado_pedido_calculado <= 0:
+            nao_faturado_pedido_calculado = round(sum(converter_numero(l.get("Não Faturado R$ Item", 0)) for l in linhas_pedido), 2)
 
         for linha in linhas_pedido:
             linha["Saldo R$ Pedido"] = saldo_pedido_calculado
@@ -2166,10 +2211,9 @@ def montar_exportacao_acionar_comprador():
 
 def gerar_excel_bytes(df):
     output = io.BytesIO()
-    df_excel = formatar_colunas_tela(df)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_excel.to_excel(writer, index=False, sheet_name="Acionar Comprador")
+        df.to_excel(writer, index=False, sheet_name="Acionar Comprador")
 
     output.seek(0)
     return output.getvalue()
