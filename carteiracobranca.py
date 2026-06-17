@@ -48,6 +48,7 @@ ANALISTAS = {
 STATUS_PENDENTE = "PENDENTE"
 STATUS_COBRADO_1 = "COBRADO 1X"
 STATUS_COBRADO_2 = "COBRADO 2X"
+STATUS_COBRADO_3 = "COBRADO 3X"
 STATUS_ACIONAR_COMPRADOR = "ACIONAR COMPRADOR"
 STATUS_COMPRADOR_ACIONADO = "COMPRADOR ACIONADO"
 STATUS_FORA_ATRASO = "FORA DO ATRASO"
@@ -305,7 +306,10 @@ def status_por_cobranca(qtd, comprador_acionado=False):
     if qtd == 1:
         return STATUS_COBRADO_1
 
-    return STATUS_COBRADO_2
+    if qtd == 2:
+        return STATUS_COBRADO_2
+
+    return STATUS_COBRADO_3
 
 
 def classe_status(status):
@@ -316,6 +320,9 @@ def classe_status(status):
         return "ok1"
 
     if status == STATUS_COBRADO_2:
+        return "ok2"
+
+    if status == STATUS_COBRADO_3:
         return "ok2"
 
     if status == STATUS_ACIONAR_COMPRADOR:
@@ -969,7 +976,7 @@ def sinalizar_acionar_comprador_lote(doc_ids, usuario, observacao):
         cobrancas = int(item.get("cobrancas", 0) or 0)
         status_atual = item.get("status", "")
 
-        if cobrancas < 2 and status_atual != STATUS_ACIONAR_COMPRADOR:
+        if cobrancas < 3 and status_atual != STATUS_ACIONAR_COMPRADOR:
             ignorados.append(item.get("pedido", doc_id))
             continue
 
@@ -1936,7 +1943,7 @@ def metricas(df):
         c2.metric("Saldo CMV", "R$ 0,00")
         c3.metric("Pré-nota CMV", "R$ 0,00")
         c4.metric("Não Faturado CMV", "R$ 0,00")
-        c5.metric("Cobrado 2x", 0)
+        c5.metric("Cobrado 3x", 0)
         c6.metric("Acionar comprador", 0)
         return
 
@@ -1944,7 +1951,7 @@ def metricas(df):
     total_pre_nota = df["pre_nota_cmv"].sum() if "pre_nota_cmv" in df.columns else 0
     total_nao_faturado = df["nao_faturado_cmv"].sum() if "nao_faturado_cmv" in df.columns else 0
 
-    total_cobrado_2x = int((df["status"] == STATUS_COBRADO_2).sum()) if "status" in df.columns else 0
+    total_cobrado_3x = int((df["status"] == STATUS_COBRADO_3).sum()) if "status" in df.columns else 0
     total_acionar = int((df["status"] == STATUS_ACIONAR_COMPRADOR).sum()) if "status" in df.columns else 0
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1953,7 +1960,7 @@ def metricas(df):
     c2.metric("Saldo CMV", formatar_moeda(total_saldo))
     c3.metric("Pré-nota CMV", formatar_moeda(total_pre_nota))
     c4.metric("Não Faturado CMV", formatar_moeda(total_nao_faturado))
-    c5.metric("Cobrado 2x", total_cobrado_2x)
+    c5.metric("Cobrado 3x", total_cobrado_3x)
     c6.metric("Acionar comprador", total_acionar)
 
 def configurar_colunas_e_processar(df, origem_texto):
@@ -2525,7 +2532,7 @@ def tela_carteira(analista=None):
 
     col_a, col_b, col_c, col_d = st.columns(4)
 
-    tem_2_cobrancas = False
+    tem_3_cobrancas = False
     tem_menos_de_2 = False
     tem_acionar = False
     tem_cobranca_para_excluir = False
@@ -2534,10 +2541,10 @@ def tela_carteira(analista=None):
         cobrancas = int(linha.get("cobrancas", 0) or 0)
         status_linha = linha.get("status", "")
 
-        if cobrancas >= 2:
-            tem_2_cobrancas = True
+        if cobrancas >= 3:
+            tem_3_cobrancas = True
 
-        if cobrancas < 2:
+        if cobrancas < 3:
             tem_menos_de_2 = True
 
         if status_linha == STATUS_ACIONAR_COMPRADOR:
@@ -2554,7 +2561,7 @@ def tela_carteira(analista=None):
             disabled=not tem_menos_de_2
         ):
             doc_ids_cobranca = df_acao[
-                df_acao["cobrancas"].fillna(0).astype(int) < 2
+                df_acao["cobrancas"].fillna(0).astype(int) < 3
             ]["doc_id"].dropna().tolist()
 
             registrar_cobranca_lote(doc_ids_cobranca, usuario_logado, obs)
@@ -2566,7 +2573,7 @@ def tela_carteira(analista=None):
             "Necessário acionar comprador",
             key=f"necessario_comprador_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not tem_2_cobrancas
+            disabled=not tem_3_cobrancas
         ):
             doc_ids_comprador = df_acao[
                 df_acao["cobrancas"].fillna(0).astype(int) >= 3
