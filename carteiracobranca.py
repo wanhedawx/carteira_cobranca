@@ -1996,6 +1996,8 @@ def configurar_colunas_e_processar(df, origem_texto):
 
 
 def calcular_valores_item_exportacao(item):
+    # Mantém exatamente os valores que vieram da carteira.
+    # Não faz rateio por QTD, porque isso distorce Pré-nota e Não Faturado.
     saldo_item = converter_numero(item.get("saldo_cmv_item", 0))
     pre_item = converter_numero(item.get("pre_nota_cmv_item", 0))
     nao_faturado_item = converter_numero(item.get("nao_faturado_cmv_item", 0))
@@ -2003,37 +2005,6 @@ def calcular_valores_item_exportacao(item):
     saldo_qtd = converter_numero(item.get("saldo_qtd_item", item.get("qtd", 0)))
     pre_qtd = converter_numero(item.get("pre_nota_qtd_item", 0))
     nao_faturado_qtd = converter_numero(item.get("nao_faturado_qtd_item", 0))
-
-    base_qtd = saldo_qtd
-
-    if base_qtd <= 0:
-        base_qtd = pre_qtd + nao_faturado_qtd
-
-    soma_valores = pre_item + nao_faturado_item
-
-    precisa_recalcular = False
-
-    if saldo_item > 0:
-        if abs(soma_valores - saldo_item) > 0.05:
-            precisa_recalcular = True
-
-        if pre_qtd > 0 and pre_item <= 0:
-            precisa_recalcular = True
-
-        if nao_faturado_qtd > 0 and nao_faturado_item <= 0:
-            precisa_recalcular = True
-
-    if precisa_recalcular and saldo_item > 0 and base_qtd > 0:
-        pre_item = saldo_item * (pre_qtd / base_qtd) if pre_qtd > 0 else 0
-        nao_faturado_item = saldo_item * (nao_faturado_qtd / base_qtd) if nao_faturado_qtd > 0 else 0
-
-        if pre_qtd <= 0 and nao_faturado_qtd <= 0:
-            pre_item = 0
-            nao_faturado_item = saldo_item
-
-    elif saldo_item > 0 and pre_item <= 0 and nao_faturado_item <= 0:
-        pre_item = 0
-        nao_faturado_item = saldo_item
 
     return {
         "saldo_item": round(float(saldo_item), 2),
@@ -2113,16 +2084,6 @@ def montar_exportacao_acionar_comprador():
         pre_pedido_calculado = round(sum(converter_numero(l.get("Pré-nota R$ Item", 0)) for l in linhas_pedido), 2)
         nao_faturado_pedido_calculado = round(sum(converter_numero(l.get("Não Faturado R$ Item", 0)) for l in linhas_pedido), 2)
 
-        # Se os itens antigos ainda não tiverem valores suficientes, usa o total do pedido salvo no banco.
-        if saldo_pedido_calculado <= 0:
-            saldo_pedido_calculado = converter_numero(pedido.get("saldo_cmv", 0))
-
-        if pre_pedido_calculado <= 0 and converter_numero(pedido.get("pre_nota_cmv", 0)) > 0:
-            pre_pedido_calculado = converter_numero(pedido.get("pre_nota_cmv", 0))
-
-        if nao_faturado_pedido_calculado <= 0 and converter_numero(pedido.get("nao_faturado_cmv", 0)) > 0:
-            nao_faturado_pedido_calculado = converter_numero(pedido.get("nao_faturado_cmv", 0))
-
         for linha in linhas_pedido:
             linha["Saldo R$ Pedido"] = saldo_pedido_calculado
             linha["Pré-nota R$ Pedido"] = pre_pedido_calculado
@@ -2177,19 +2138,29 @@ def tela_exportar_acionar_comprador():
         st.info("Nenhum pedido com status ACIONAR COMPRADOR no momento.")
         return
 
+    resumo_pedidos_export = (
+        df_export.groupby("pedido", dropna=False)
+        .agg({
+            "Saldo R$ Pedido": "first",
+            "Pré-nota R$ Pedido": "first",
+            "Não Faturado R$ Pedido": "first",
+        })
+        .reset_index()
+    )
+
     total_saldo_pedido = (
-        df_export["Saldo R$ Item"].apply(converter_numero).sum()
-        if "Saldo R$ Item" in df_export.columns
+        resumo_pedidos_export["Saldo R$ Pedido"].apply(converter_numero).sum()
+        if "Saldo R$ Pedido" in resumo_pedidos_export.columns
         else 0
     )
     total_pre_nota_pedido = (
-        df_export["Pré-nota R$ Item"].apply(converter_numero).sum()
-        if "Pré-nota R$ Item" in df_export.columns
+        resumo_pedidos_export["Pré-nota R$ Pedido"].apply(converter_numero).sum()
+        if "Pré-nota R$ Pedido" in resumo_pedidos_export.columns
         else 0
     )
     total_nao_faturado_pedido = (
-        df_export["Não Faturado R$ Item"].apply(converter_numero).sum()
-        if "Não Faturado R$ Item" in df_export.columns
+        resumo_pedidos_export["Não Faturado R$ Pedido"].apply(converter_numero).sum()
+        if "Não Faturado R$ Pedido" in resumo_pedidos_export.columns
         else 0
     )
 
