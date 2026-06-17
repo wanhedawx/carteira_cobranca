@@ -1661,7 +1661,7 @@ def senha_valida(usuario, senha):
 
 
 def tela_login():
-    st.title("📋 Cobrança de Carteira")
+    st.title("Cobrança de Carteira")
     st.caption("Acompanhamento de pedidos atrasados.")
 
     with st.form("login"):
@@ -1690,7 +1690,7 @@ usuario_logado = st.session_state["usuario"]
 # =========================
 # SIDEBAR
 # =========================
-st.sidebar.title("📋 Carteira")
+st.sidebar.title("Carteira")
 st.sidebar.write(f"Usuário: **{usuario_logado}**")
 
 if st.sidebar.button("Sair"):
@@ -1701,8 +1701,7 @@ st.sidebar.divider()
 st.sidebar.caption("Regra de cobrança")
 st.sidebar.write(f"Hoje: **{data_br(hoje())}**")
 st.sidebar.write(f"Cobrar até: **{data_br(data_limite_cobranca())}**")
-st.sidebar.write("Primeiro retira quem tem DT Agendamento.")
-st.sidebar.write("Depois cobra atraso pela menor Data Prev Entrega.")
+
 
 # =========================
 # TELAS
