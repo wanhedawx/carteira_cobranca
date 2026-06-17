@@ -939,7 +939,7 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
             )
 
     except Exception as e:
-        st.error("Erro ao excluir cobrança em lote.")
+        st.error("Erro ao excluir cobrança.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -1692,10 +1692,10 @@ def processar_carteira(df, usuario):
 
         if doc_id not in ids_arquivo_completo:
             cancelados += 1
-            status = STATUS_CANCELADO
-            obs = "Pedido saiu do arquivo completo. Retirado da cobrança e da contagem."
-            tipo = "CANCELADO_RETIRADO"
-            data_cancelamento = data_proc
+            status = ""
+            obs = "Pedido saiu da carteira. Retirado da cobrança e da contagem."
+            tipo = "SAIU_DA_CARTEIRA"
+            data_cancelamento = None
 
         elif doc_id not in ids_sem_agendamento:
             com_agendamento += 1
@@ -1843,11 +1843,10 @@ def montar_df_itens(itens):
         df = df.sort_values(ordenar, na_position="last")
 
     cols = [
-        "pedido", "analista", "departamento", "fornecedor",
-        "dt_agendada", "qtd_itens",
+        "analista", "departamento", "fornecedor", "pedido",
+        "dt_agendada", "status", "cobrancas", "ultima_cobranca",
         "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
-        "status", "cobrancas", "ultima_cobranca",
-        "data_primeira_entrada", "data_ultimo_upload", "data_cancelamento", "doc_id"
+        "qtd_itens", "dt_agendada_ordem", "doc_id"
     ]
 
     cols = [c for c in cols if c in df.columns]
@@ -2105,7 +2104,7 @@ def configurar_colunas_e_processar(df, origem_texto):
         c4, c5, c6 = st.columns(3)
         c4.metric("Itens retirados por DT Agendamento", resultado["retirados_agendamento"])
         c5.metric("Fora por data", resultado["retirados_por_data"])
-        c6.metric("Retirados da conta", resultado["cancelados"])
+        c6.metric("Saíram da carteira", resultado["cancelados"])
 
         c7, c8, c9 = st.columns(3)
         c7.metric("Com agendamento", resultado["com_agendamento"])
@@ -2368,6 +2367,10 @@ def tela_carteira(analista=None):
 
     df = montar_df_itens(itens)
 
+    if not df.empty and "doc_id" in df.columns:
+        obs_por_doc = buscar_obs_ultima_cobranca(df["doc_id"].dropna().tolist())
+        df["obs_cobranca"] = df["doc_id"].map(obs_por_doc).fillna("")
+
     metricas(df)
 
     if df.empty:
@@ -2382,13 +2385,27 @@ def tela_carteira(analista=None):
 
     st.subheader("Pedidos em atraso para cobrar")
 
-    df_tela = df_filtrado.drop(
-        columns=["doc_id", "dt_agendada_ordem", "qtd_itens"],
-        errors="ignore"
-    )
+    ordem_tela = [
+        "analista", "departamento", "fornecedor", "pedido",
+        "dt_agendada", "status", "cobrancas", "obs_cobranca", "ultima_cobranca",
+        "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
+    ]
+
+    df_tela = df_filtrado[[c for c in ordem_tela if c in df_filtrado.columns]].copy()
 
     df_tela = df_tela.rename(columns={
-        "dt_agendada": "data_prev_entrega",
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "dt_agendada": "Data Prev Entrega",
+        "status": "Status",
+        "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
+        "ultima_cobranca": "Última Cobrança",
+        "saldo_cmv": "Saldo CMV",
+        "pre_nota_cmv": "Pré-nota CMV",
+        "nao_faturado_cmv": "Não Faturado CMV",
     })
 
     st.dataframe(
@@ -2412,7 +2429,7 @@ def tela_carteira(analista=None):
     )
 
     st.divider()
-    st.subheader("Ação de cobrança em lote")
+    st.subheader("Registrar cobrança")
 
     if df_filtrado.empty:
         st.info("Nenhum pedido encontrado com os filtros.")
@@ -2486,27 +2503,39 @@ def tela_carteira(analista=None):
         st.info("Selecione ou cole os pedidos que receberão o mesmo retorno.")
         return
 
-    st.success(f"{len(df_acao)} pedido(s) selecionado(s) para ação em lote.")
+    st.success(f"{len(df_acao)} pedido(s) selecionado(s).")
 
     colunas_acao = [
-        "pedido",
         "analista",
         "departamento",
         "fornecedor",
+        "pedido",
         "dt_agendada",
+        "status",
+        "cobrancas",
+        "obs_cobranca",
+        "ultima_cobranca",
         "saldo_cmv",
         "pre_nota_cmv",
         "nao_faturado_cmv",
-        "status",
-        "cobrancas",
-        "ultima_cobranca",
     ]
 
     colunas_acao = [c for c in colunas_acao if c in df_acao.columns]
 
     df_acao_tela = df_acao[colunas_acao].copy()
     df_acao_tela = df_acao_tela.rename(columns={
-        "dt_agendada": "data_prev_entrega",
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "dt_agendada": "Data Prev Entrega",
+        "status": "Status",
+        "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
+        "ultima_cobranca": "Última Cobrança",
+        "saldo_cmv": "Saldo CMV",
+        "pre_nota_cmv": "Pré-nota CMV",
+        "nao_faturado_cmv": "Não Faturado CMV",
     })
 
     st.dataframe(
@@ -2523,7 +2552,7 @@ def tela_carteira(analista=None):
     c2.metric("Saldo CMV selecionado", formatar_moeda(total_saldo))
 
     obs = st.text_area(
-        "Observação que será aplicada para todos os pedidos selecionados",
+        "Observação da cobrança",
         key=f"obs_lote_{analista or 'geral'}",
         placeholder="Ex.: cobrado representante X referente às fábricas/pedidos selecionados..."
     )
