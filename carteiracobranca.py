@@ -65,12 +65,22 @@ COLUNAS_MOEDA = [
     "saldo_cmv_pedido",
     "pre_nota_cmv_pedido",
     "nao_faturado_cmv_pedido",
+    "Saldo CMV",
+    "Pré-nota CMV",
+    "Não Faturado CMV",
+    "Saldo CMV selecionado",
     "Saldo R$ Item",
     "Pré-nota R$ Item",
     "Não Faturado R$ Item",
     "Saldo R$ Pedido",
     "Pré-nota R$ Pedido",
     "Não Faturado R$ Pedido",
+    "Saldo Item",
+    "Pré-nota Item",
+    "Não Faturado Item",
+    "Saldo Pedido",
+    "Pré-nota Pedido",
+    "Não Faturado Pedido",
 ]
 
 CAMPOS_PEDIDOS = [
@@ -270,15 +280,12 @@ def converter_numero(valor):
 def formatar_moeda(valor):
     try:
         if valor is None or str(valor).strip() == "":
-            return "R$ 0,00"
+            return "0,00"
 
-        if isinstance(valor, str) and valor.strip().startswith("R$"):
-            return valor
-
-        v = float(valor)
-        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        v = converter_numero(valor)
+        return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
-        return str(valor or "R$ 0,00")
+        return str(valor or "0,00")
 
 
 def formatar_df_moeda(df):
@@ -2330,15 +2337,31 @@ def montar_exportacao_acionar_comprador():
             "status": "Status",
             "cobrancas": "Cobranças",
             "ultima_cobranca": "Última Cobrança",
+            "Saldo R$ Item": "Saldo Item",
+            "Pré-nota R$ Item": "Pré-nota Item",
+            "Não Faturado R$ Item": "Não Faturado Item",
+            "Saldo R$ Pedido": "Saldo Pedido",
+            "Pré-nota R$ Pedido": "Pré-nota Pedido",
+            "Não Faturado R$ Pedido": "Não Faturado Pedido",
         })
 
     return df
 
-def gerar_excel_bytes(df):
+def gerar_excel_bytes(df, sheet_name="Acionar Comprador"):
     output = io.BytesIO()
+    aba = str(sheet_name or "Exportação")[:31]
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Acionar Comprador")
+        df.to_excel(writer, index=False, sheet_name=aba)
+        ws = writer.sheets[aba]
+
+        for idx, col_name in enumerate(df.columns, start=1):
+            if col_name in COLUNAS_MOEDA:
+                for row in range(2, ws.max_row + 1):
+                    ws.cell(row=row, column=idx).number_format = '#,##0.00'
+
+            largura = max(12, min(45, len(str(col_name)) + 2))
+            ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = largura
 
     output.seek(0)
     return output.getvalue()
@@ -2356,26 +2379,26 @@ def tela_exportar_acionar_comprador():
     resumo_pedidos_export = (
         df_export.groupby("Pedido", dropna=False)
         .agg({
-            "Saldo R$ Pedido": "first",
-            "Pré-nota R$ Pedido": "first",
-            "Não Faturado R$ Pedido": "first",
+            "Saldo Pedido": "first",
+            "Pré-nota Pedido": "first",
+            "Não Faturado Pedido": "first",
         })
         .reset_index()
     )
 
     total_saldo_pedido = (
-        resumo_pedidos_export["Saldo R$ Pedido"].apply(converter_numero).sum()
-        if "Saldo R$ Pedido" in resumo_pedidos_export.columns
+        resumo_pedidos_export["Saldo Pedido"].apply(converter_numero).sum()
+        if "Saldo Pedido" in resumo_pedidos_export.columns
         else 0
     )
     total_pre_nota_pedido = (
-        resumo_pedidos_export["Pré-nota R$ Pedido"].apply(converter_numero).sum()
-        if "Pré-nota R$ Pedido" in resumo_pedidos_export.columns
+        resumo_pedidos_export["Pré-nota Pedido"].apply(converter_numero).sum()
+        if "Pré-nota Pedido" in resumo_pedidos_export.columns
         else 0
     )
     total_nao_faturado_pedido = (
-        resumo_pedidos_export["Não Faturado R$ Pedido"].apply(converter_numero).sum()
-        if "Não Faturado R$ Pedido" in resumo_pedidos_export.columns
+        resumo_pedidos_export["Não Faturado Pedido"].apply(converter_numero).sum()
+        if "Não Faturado Pedido" in resumo_pedidos_export.columns
         else 0
     )
 
@@ -2472,27 +2495,23 @@ def tela_carteira(analista=None):
         "nao_faturado_cmv": "Não Faturado CMV",
     })
 
+    excel_carteira = gerar_excel_bytes(df_tela, sheet_name="Carteira")
+
+    st.download_button(
+        "Baixar carteira filtrada em Excel",
+        data=excel_carteira,
+        file_name="carteira_cobranca_atraso.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
     st.dataframe(
         formatar_df_moeda(df_tela),
         use_container_width=True,
         hide_index=True,
-        height=420
+        height=330
     )
 
-    df_csv = df_tela.copy()
-    df_csv = formatar_df_moeda(df_csv)
-
-    csv = df_csv.to_csv(index=False, sep=";").encode("utf-8-sig")
-
-    st.download_button(
-        "Baixar carteira filtrada em CSV",
-        data=csv,
-        file_name="carteira_cobranca_atraso.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
-    st.divider()
     st.subheader("Registrar cobrança")
 
     if df_filtrado.empty:
@@ -2606,7 +2625,7 @@ def tela_carteira(analista=None):
         formatar_df_moeda(df_acao_tela),
         use_container_width=True,
         hide_index=True,
-        height=260
+        height=220
     )
 
     total_saldo = df_acao["saldo_cmv"].sum() if "saldo_cmv" in df_acao.columns else 0
