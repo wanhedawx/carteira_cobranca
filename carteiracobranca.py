@@ -2172,11 +2172,6 @@ def gerar_excel_bytes(df):
 def tela_exportar_acionar_comprador():
     st.header("Exportar Acionar Comprador")
 
-    st.caption(
-        "Exporta todos os pedidos ativos com status ACIONAR COMPRADOR, "
-        "trazendo Cod_Prod, Desc_Prod, quantidades e valores por item."
-    )
-
     df_export = montar_exportacao_acionar_comprador()
 
     if df_export.empty:
@@ -2226,13 +2221,6 @@ def tela_exportar_acionar_comprador():
 
 def tela_upload():
     st.header("Atualizar carteira")
-
-    st.warning(
-        "A cobrança será montada somente com produtos/pedidos sem DT Agendamento. "
-        "Depois disso, o sistema cobra o que estiver com Data Prev Entrega até ontem. "
-        "Pedido que sumir do arquivo será retirado da conta, não será marcado como entregue."
-    )
-
     arquivo = st.file_uploader("Arquivo da carteira", type=["xlsx", "xls", "csv"])
 
     if not arquivo:
@@ -2244,11 +2232,10 @@ def tela_upload():
 
 
 def tela_carteira(analista=None):
-    titulo = "📌 Minha carteira em atraso" if analista else "📌 Carteira geral em atraso"
+    titulo = "Minha carteira em atraso" if analista else "Carteira geral em atraso"
     st.header(titulo)
 
     st.info(f"Data limite da cobrança hoje: **{data_br(data_limite_cobranca())}**")
-    st.caption("Aparecem aqui somente pedidos sem DT Agendamento e com Data Prev Entrega em atraso.")
 
     itens = buscar_docs(
         ativos=True,
@@ -2467,7 +2454,7 @@ def tela_carteira(analista=None):
             disabled=not tem_2_cobrancas
         ):
             doc_ids_comprador = df_acao[
-                df_acao["cobrancas"].fillna(0).astype(int) >= 2
+                df_acao["cobrancas"].fillna(0).astype(int) >= 3
             ]["doc_id"].dropna().tolist()
 
             sinalizar_acionar_comprador_lote(doc_ids_comprador, usuario_logado, obs)
@@ -2603,8 +2590,9 @@ def tela_regras():
     st.write("1. Pedido atrasado entra como PENDENTE.")
     st.write("2. Registrar cobrança uma vez: status COBRADO 1X.")
     st.write("3. Registrar cobrança duas vezes: status COBRADO 2X.")
-    st.write("4. Se cobrou 2x e não respondeu, clicar em NECESSÁRIO ACIONAR COMPRADOR.")
-    st.write("5. Depois que falar com o comprador, clicar em COMPRADOR ACIONADO.")
+    st.write("4. Registrar cobrança três vezes: status COBRADO 3X.")
+    st.write("5. Se cobrou 3x e não respondeu, clicar em NECESSÁRIO ACIONAR COMPRADOR.")
+    st.write("6. Depois que falar com o comprador, clicar em COMPRADOR ACIONADO.")
 
     st.subheader("Valores considerados")
     st.write("Saldo CMV = Pré-nota CMV + Não Faturado CMV.")
