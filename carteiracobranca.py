@@ -630,18 +630,26 @@ def buscar_obs_ultima_cobranca(doc_ids):
         return {}
 
     sql = text("""
-        select distinct on (doc_id)
-            doc_id,
-            observacao
-        from carteira_historico
-        where doc_id in :ids
-          and coalesce(observacao, '') <> ''
-          and tipo in (
-              'COBRANCA',
-              'NECESSARIO_ACIONAR_COMPRADOR',
-              'COMPRADOR_ACIONADO'
+        select distinct on (h.doc_id)
+            h.doc_id,
+            h.observacao
+        from carteira_historico h
+        join carteira_pedidos p
+          on p.doc_id = h.doc_id
+        where h.doc_id in :ids
+          and coalesce(h.observacao, '') <> ''
+          and (
+              (
+                  p.status in ('ACIONAR COMPRADOR', 'COMPRADOR ACIONADO')
+                  and h.tipo in ('NECESSARIO_ACIONAR_COMPRADOR', 'COMPRADOR_ACIONADO')
+              )
+              or (
+                  p.status not in ('ACIONAR COMPRADOR', 'COMPRADOR ACIONADO')
+                  and h.tipo = 'COBRANCA'
+                  and h.cobranca_numero = p.cobrancas
+              )
           )
-        order by doc_id, data desc, id desc
+        order by h.doc_id, h.data desc, h.id desc
     """).bindparams(bindparam("ids", expanding=True))
 
     try:
@@ -655,6 +663,44 @@ def buscar_obs_ultima_cobranca(doc_ids):
 
     except Exception as e:
         st.error("Erro ao buscar observações de cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def buscar_data_cobranca_por_numero(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id, cobranca_numero)
+            doc_id,
+            cobranca_numero,
+            data
+        from carteira_historico
+        where doc_id in :ids
+          and tipo = 'COBRANCA'
+          and cobranca_numero is not null
+        order by doc_id, cobranca_numero, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        mapa = {}
+
+        for r in rows:
+            doc_id = r["doc_id"]
+            numero = int(r.get("cobranca_numero") or 0)
+            mapa.setdefault(doc_id, {})[numero] = r.get("data", "")
+
+        return mapa
+
+    except Exception as e:
+        st.error("Erro ao buscar datas das cobranças.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
@@ -846,11 +892,21 @@ def registrar_cobranca_lote(doc_ids, usuario, observacao):
         st.stop()
 
 
-def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
+def excluir_cobranca_selecionada_lote(doc_ids, usuario, observacao, cobranca_numero):
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
 
     if not ids:
         st.warning("Selecione pelo menos um pedido.")
+        return
+
+    try:
+        cobranca_numero = int(cobranca_numero)
+    except Exception:
+        st.warning("Selecione qual cobrança deseja excluir.")
+        return
+
+    if cobranca_numero <= 0:
+        st.warning("Selecione qual cobrança deseja excluir.")
         return
 
     itens = buscar_docs_por_ids(
@@ -868,6 +924,8 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
         st.error("Nenhum pedido encontrado para excluir cobrança.")
         return
 
+    datas_por_doc = buscar_data_cobranca_por_numero(ids)
+
     data_evento = agora_str()
     updates = []
     historicos = []
@@ -877,22 +935,22 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
         doc_id = item["doc_id"]
         atual = int(item.get("cobrancas", 0) or 0)
 
-        if atual <= 0:
+        if atual < cobranca_numero:
             ignorados.append(item.get("pedido", doc_id))
             continue
 
-        nova_qtd = atual - 1
-        comprador_acionado = bool(item.get("comprador_acionado", False))
-
-        if comprador_acionado:
-            novo_status = STATUS_COMPRADOR_ACIONADO
-        else:
-            novo_status = status_por_cobranca(nova_qtd, False)
+        # Se excluir a 2ª cobrança, por exemplo, o pedido volta para 1 cobrança.
+        # Isso evita ficar com histórico e status inconsistentes.
+        nova_qtd = max(cobranca_numero - 1, 0)
+        novo_status = status_por_cobranca(nova_qtd, False)
+        nova_ultima = datas_por_doc.get(doc_id, {}).get(nova_qtd, "") if nova_qtd > 0 else ""
 
         updates.append({
             "doc_id": doc_id,
             "cobrancas": nova_qtd,
             "status": novo_status,
+            "comprador_acionado": False,
+            "ultima_cobranca": nova_ultima,
             "atualizado_em": data_evento,
         })
 
@@ -902,13 +960,13 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
             "tipo": "EXCLUSAO_COBRANCA",
             "data": data_evento,
             "usuario": usuario,
-            "observacao": observacao or "Exclusão da última cobrança registrada.",
-            "cobranca_numero": atual,
+            "observacao": observacao or f"Exclusão da {cobranca_numero}ª cobrança. Pedido voltou para {nova_qtd} cobrança(s).",
+            "cobranca_numero": cobranca_numero,
             "status_apos": novo_status,
         })
 
     if not updates:
-        st.warning("Nenhum pedido tinha cobrança para excluir.")
+        st.warning(f"Nenhum pedido tinha {cobranca_numero} cobrança(s) para excluir.")
         return
 
     try:
@@ -919,6 +977,8 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
                     set
                         cobrancas = :cobrancas,
                         status = :status,
+                        comprador_acionado = :comprador_acionado,
+                        ultima_cobranca = :ultima_cobranca,
                         atualizado_em = :atualizado_em
                     where doc_id = :doc_id
                 """),
@@ -934,7 +994,7 @@ def excluir_ultima_cobranca_lote(doc_ids, usuario, observacao):
 
         if ignorados:
             st.warning(
-                "Alguns pedidos foram ignorados porque estavam com 0 cobrança: "
+                f"Alguns pedidos foram ignorados porque não tinham {cobranca_numero} cobrança(s): "
                 + ", ".join(str(x) for x in ignorados[:20])
             )
 
@@ -2557,6 +2617,33 @@ def tela_carteira(analista=None):
         placeholder="Ex.: cobrado representante X referente às fábricas/pedidos selecionados..."
     )
 
+    maior_cobranca_selecionada = 0
+
+    if "cobrancas" in df_acao.columns and not df_acao.empty:
+        maior_cobranca_selecionada = int(df_acao["cobrancas"].fillna(0).astype(int).max())
+
+    opcoes_excluir = [
+        (1, "1ª cobrança"),
+        (2, "2ª cobrança"),
+        (3, "3ª cobrança"),
+    ]
+    opcoes_excluir = [op for op in opcoes_excluir if op[0] <= maior_cobranca_selecionada]
+
+    if opcoes_excluir:
+        label_para_numero = {label: numero for numero, label in opcoes_excluir}
+        cobranca_excluir_label = st.selectbox(
+            "Qual cobrança deseja excluir?",
+            list(label_para_numero.keys()),
+            key=f"cobranca_excluir_{analista or 'geral'}"
+        )
+        cobranca_excluir_numero = label_para_numero[cobranca_excluir_label]
+        st.caption(
+            f"Ao excluir a {cobranca_excluir_label}, o pedido volta para "
+            f"{max(cobranca_excluir_numero - 1, 0)} cobrança(s)."
+        )
+    else:
+        cobranca_excluir_numero = None
+
     doc_ids = df_acao["doc_id"].dropna().tolist()
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -2629,13 +2716,18 @@ def tela_carteira(analista=None):
 
     with col_d:
         if st.button(
-            "Excluir última cobrança",
+            "Excluir cobrança selecionada",
             key=f"excluir_cobranca_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not tem_cobranca_para_excluir
+            disabled=(not tem_cobranca_para_excluir or cobranca_excluir_numero is None)
         ):
-            excluir_ultima_cobranca_lote(doc_ids, usuario_logado, obs)
-            st.success("Última cobrança excluída dos pedidos selecionados quando aplicável.")
+            excluir_cobranca_selecionada_lote(
+                doc_ids,
+                usuario_logado,
+                obs,
+                cobranca_excluir_numero
+            )
+            st.success("Cobrança selecionada excluída dos pedidos quando aplicável.")
             st.rerun()
 
     if len(df_acao) == 1:
