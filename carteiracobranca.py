@@ -82,6 +82,10 @@ COLUNAS_MOEDA = [
     "Saldo Pedido",
     "Pré-nota Pedido",
     "Não Faturado Pedido",
+    "Saldo em Atraso",
+    "Pré-nota em Atraso",
+    "Não Faturado em Atraso",
+    "Saldo Total",
 ]
 
 CAMPOS_PEDIDOS = [
@@ -107,6 +111,7 @@ CAMPOS_PEDIDOS = [
     "data_cancelamento",
     "criado_em",
     "atualizado_em",
+    "curva_abc",
     "itens_json",
 ]
 
@@ -129,6 +134,7 @@ CAMPOS_LISTAGEM = [
     "data_ultimo_upload",
     "data_cancelamento",
     "ativo",
+    "curva_abc",
     "itens_json",
 ]
 
@@ -475,6 +481,7 @@ def inicializar_banco():
         data_cancelamento text,
         criado_em text,
         atualizado_em text,
+        curva_abc text default '',
         itens_json text default '[]'
     );
 
@@ -489,6 +496,9 @@ def inicializar_banco():
         cobranca_numero integer,
         status_apos text
     );
+
+    alter table carteira_pedidos
+    add column if not exists curva_abc text default '';
 
     alter table carteira_pedidos
     add column if not exists itens_json text default '[]';
@@ -786,7 +796,7 @@ UPSERT_PEDIDO_SQL = text("""
         saldo_cmv, pre_nota_cmv, nao_faturado_cmv, qtd_itens,
         ativo, status, cobrancas, comprador_acionado,
         ultima_cobranca, data_primeira_entrada, data_ultimo_upload,
-        data_cancelamento, criado_em, atualizado_em, itens_json
+        data_cancelamento, criado_em, atualizado_em, curva_abc, itens_json
     )
     values (
         :doc_id, :pedido, :analista, :departamento, :departamento_norm, :fornecedor,
@@ -794,7 +804,7 @@ UPSERT_PEDIDO_SQL = text("""
         :saldo_cmv, :pre_nota_cmv, :nao_faturado_cmv, :qtd_itens,
         :ativo, :status, :cobrancas, :comprador_acionado,
         :ultima_cobranca, :data_primeira_entrada, :data_ultimo_upload,
-        :data_cancelamento, :criado_em, :atualizado_em, :itens_json
+        :data_cancelamento, :criado_em, :atualizado_em, :curva_abc, :itens_json
     )
     on conflict (doc_id) do update set
         pedido = excluded.pedido,
@@ -818,6 +828,7 @@ UPSERT_PEDIDO_SQL = text("""
         data_cancelamento = excluded.data_cancelamento,
         criado_em = coalesce(carteira_pedidos.criado_em, excluded.criado_em),
         atualizado_em = excluded.atualizado_em,
+        curva_abc = excluded.curva_abc,
         itens_json = excluded.itens_json
 """)
 
@@ -1326,6 +1337,11 @@ def encontrar_colunas_itens(df):
         "Pré Nota QTD", "Pre Nota QTD"
     ])
 
+    col_curva_abc = encontrar_coluna_fixa(df, [
+        "Curva ABC", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Curva Produto", "Curva Item", "Curva Mercadoria"
+    ])
+
     mapa = {norm(c): c for c in df.columns}
 
     if not col_codigo:
@@ -1376,6 +1392,7 @@ def encontrar_colunas_itens(df):
         "saldo_qtd": col_saldo_qtd,
         "nao_faturado_qtd": col_nao_faturado_qtd,
         "pre_nota_qtd": col_pre_nota_qtd,
+        "curva_abc": col_curva_abc,
     }
 
 
@@ -1388,6 +1405,7 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
     col_saldo_qtd = colunas_itens.get("saldo_qtd")
     col_nao_faturado_qtd = colunas_itens.get("nao_faturado_qtd")
     col_pre_nota_qtd = colunas_itens.get("pre_nota_qtd")
+    col_curva_abc = colunas_itens.get("curva_abc")
 
     col_saldo = colunas_valores.get("saldo_cmv")
     col_pre_nota = colunas_valores.get("pre_nota_cmv")
@@ -1403,6 +1421,7 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
         saldo_item = 0
         pre_nota_item = 0
         nao_faturado_item = 0
+        curva_abc = ""
 
         if col_codigo and col_codigo in linha.index:
             codigo = str(linha.get(col_codigo, "") or "").strip()
@@ -1431,6 +1450,9 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
         if col_nao_faturado and col_nao_faturado in linha.index:
             nao_faturado_item = converter_numero(linha.get(col_nao_faturado, 0))
 
+        if col_curva_abc and col_curva_abc in linha.index:
+            curva_abc = str(linha.get(col_curva_abc, "") or "").strip().upper()
+
         if codigo or descricao or qtd or saldo_item or pre_nota_item or nao_faturado_item:
             itens.append({
                 "codigo": codigo,
@@ -1442,6 +1464,7 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
                 "saldo_cmv_item": saldo_item,
                 "pre_nota_cmv_item": pre_nota_item,
                 "nao_faturado_cmv_item": nao_faturado_item,
+                "curva_abc": curva_abc,
             })
 
     return itens
@@ -1469,6 +1492,11 @@ def mapear_colunas_fixas(df):
         "Data Agendada", "DT Agendada", "Dt Agendada",
         "DT Agendando", "Dt Agendando", "Data Agendando",
         "Agendamento", "Agendada", "Agendando", "Dt Agend", "DT Agend"
+    ])
+
+    col_curva_abc = encontrar_coluna_fixa(df, [
+        "Curva ABC", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Curva Produto", "Curva Item", "Curva Mercadoria"
     ])
 
     # Valores R$/CMV: procura sem confundir com colunas QTD.
@@ -1506,9 +1534,14 @@ def mapear_colunas_fixas(df):
         "saldo_cmv": col_saldo,
         "pre_nota_cmv": col_pre_nota,
         "nao_faturado_cmv": col_nao_faturado,
+        "curva_abc": col_curva_abc,
     }
 
-    faltando = [campo for campo, coluna in colunas.items() if coluna is None]
+    obrigatorios = [
+        "pedido", "departamento", "fornecedor", "data_prev_entrega",
+        "dt_agendamento", "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv"
+    ]
+    faltando = [campo for campo in obrigatorios if colunas.get(campo) is None]
 
     return colunas, faltando
 
@@ -1527,6 +1560,11 @@ def agregar_por_pedido(df, colunas):
     base["_saldo_cmv"] = base[colunas["saldo_cmv"]].apply(converter_numero)
     base["_pre_nota_cmv"] = base[colunas["pre_nota_cmv"]].apply(converter_numero)
     base["_nao_faturado_cmv"] = base[colunas["nao_faturado_cmv"]].apply(converter_numero)
+
+    if colunas.get("curva_abc"):
+        base["_curva_abc"] = base[colunas["curva_abc"]].astype(str).str.strip().str.upper()
+    else:
+        base["_curva_abc"] = ""
 
     base = base[
         (base["_pedido"].notna()) &
@@ -1556,7 +1594,7 @@ def agregar_por_pedido(df, colunas):
         agrupado = pd.DataFrame(columns=[
             "_pedido", "departamento", "fornecedor", "menor_data_prev_entrega",
             "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "qtd_itens",
-            "itens_json"
+            "curva_abc", "itens_json"
         ])
 
         agrupado.attrs["retirados_agendamento"] = retirados_agendamento
@@ -1575,7 +1613,8 @@ def agregar_por_pedido(df, colunas):
         saldo_cmv=("_saldo_cmv", "sum"),
         pre_nota_cmv=("_pre_nota_cmv", "sum"),
         nao_faturado_cmv=("_nao_faturado_cmv", "sum"),
-        qtd_itens=("_pedido", "size")
+        qtd_itens=("_pedido", "size"),
+        curva_abc=("_curva_abc", primeiro_valor)
     ).reset_index()
 
     itens_por_pedido = {}
@@ -1636,6 +1675,7 @@ def preparar_linhas(df):
             "pre_nota_cmv": float(row["pre_nota_cmv"] or 0),
             "nao_faturado_cmv": float(row["nao_faturado_cmv"] or 0),
             "qtd_itens": int(row["qtd_itens"] or 0),
+            "curva_abc": str(row.get("curva_abc", "") or "").strip().upper(),
             "itens_json": row.get("itens_json", []),
         }
 
@@ -2105,7 +2145,7 @@ def montar_df_itens(itens):
         "analista", "departamento", "fornecedor", "pedido",
         "dt_agendada", "status", "cobrancas", "ultima_cobranca",
         "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
-        "qtd_itens", "dt_agendada_ordem", "doc_id", "produto_busca"
+        "qtd_itens", "curva_abc", "dt_agendada_ordem", "doc_id", "produto_busca"
     ]
 
     cols = [c for c in cols if c in df.columns]
@@ -2651,6 +2691,269 @@ def gerar_excel_bytes(df, sheet_name="Acionar Comprador"):
 
     output.seek(0)
     return output.getvalue()
+
+
+
+
+# =========================
+# ANÁLISE DE ATRASOS
+# =========================
+def preparar_base_analise_atrasos(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    base = df.copy()
+
+    for col in ["saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv", "cobrancas"]:
+        if col in base.columns:
+            base[col] = pd.to_numeric(base[col], errors="coerce").fillna(0)
+
+    if "dt_agendada_ordem" in base.columns:
+        base["_data_prev"] = pd.to_datetime(base["dt_agendada_ordem"], errors="coerce")
+    else:
+        base["_data_prev"] = pd.NaT
+
+    meses = {
+        1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
+        7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
+    }
+
+    base["_ano_mes_ordem"] = base["_data_prev"].dt.strftime("%Y-%m")
+    base["Mês do atraso"] = base["_data_prev"].apply(
+        lambda d: f"{meses.get(int(d.month), '')}/{int(d.year)}" if pd.notna(d) else "Sem data"
+    )
+
+    return base
+
+
+def resumo_agrupado(df, grupo, nome_coluna):
+    if df is None or df.empty or grupo not in df.columns:
+        return pd.DataFrame(columns=[nome_coluna, "Pedidos", "Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"])
+
+    resumo = (
+        df.groupby(grupo, dropna=False)
+        .agg(
+            Pedidos=("pedido", "nunique"),
+            **{
+                "Saldo em Atraso": ("saldo_cmv", "sum"),
+                "Pré-nota em Atraso": ("pre_nota_cmv", "sum"),
+                "Não Faturado em Atraso": ("nao_faturado_cmv", "sum"),
+            }
+        )
+        .reset_index()
+        .rename(columns={grupo: nome_coluna})
+    )
+
+    resumo[nome_coluna] = resumo[nome_coluna].fillna("SEM INFORMAÇÃO").astype(str)
+    resumo = resumo.sort_values("Saldo em Atraso", ascending=False)
+
+    return resumo
+
+
+def resumo_meses_atraso(df):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Mês do atraso", "Pedidos", "Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"])
+
+    resumo = (
+        df.groupby(["_ano_mes_ordem", "Mês do atraso"], dropna=False)
+        .agg(
+            Pedidos=("pedido", "nunique"),
+            **{
+                "Saldo em Atraso": ("saldo_cmv", "sum"),
+                "Pré-nota em Atraso": ("pre_nota_cmv", "sum"),
+                "Não Faturado em Atraso": ("nao_faturado_cmv", "sum"),
+            }
+        )
+        .reset_index()
+        .sort_values("_ano_mes_ordem", na_position="last")
+        .drop(columns=["_ano_mes_ordem"], errors="ignore")
+    )
+
+    return resumo
+
+
+def resumo_curva_abc(df):
+    """
+    Tenta calcular a curva pelo item, quando o arquivo trouxe coluna Curva/ABC.
+    Se não houver curva no item, usa a curva do pedido.
+    Se também não houver, mostra SEM CURVA.
+    """
+    linhas = []
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Curva ABC", "Pedidos", "Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"])
+
+    for _, row in df.iterrows():
+        pedido = str(row.get("pedido", "") or "")
+        itens_raw = row.get("itens_json", "[]")
+
+        try:
+            itens = json.loads(itens_raw or "[]") if isinstance(itens_raw, str) else (itens_raw or [])
+        except Exception:
+            itens = []
+
+        adicionou_item = False
+
+        if isinstance(itens, list):
+            for item in itens:
+                if not isinstance(item, dict):
+                    continue
+
+                curva = str(item.get("curva_abc", "") or item.get("curva", "") or "").strip().upper()
+
+                if not curva:
+                    continue
+
+                saldo_item = converter_numero(item.get("saldo_cmv_item", 0))
+                pre_item = converter_numero(item.get("pre_nota_cmv_item", 0))
+                nao_item = converter_numero(item.get("nao_faturado_cmv_item", 0))
+
+                linhas.append({
+                    "pedido": pedido,
+                    "Curva ABC": curva,
+                    "Saldo em Atraso": saldo_item,
+                    "Pré-nota em Atraso": pre_item,
+                    "Não Faturado em Atraso": nao_item,
+                })
+                adicionou_item = True
+
+        if not adicionou_item:
+            curva_pedido = str(row.get("curva_abc", "") or "").strip().upper()
+
+            if not curva_pedido:
+                curva_pedido = "SEM CURVA"
+
+            linhas.append({
+                "pedido": pedido,
+                "Curva ABC": curva_pedido,
+                "Saldo em Atraso": float(row.get("saldo_cmv", 0) or 0),
+                "Pré-nota em Atraso": float(row.get("pre_nota_cmv", 0) or 0),
+                "Não Faturado em Atraso": float(row.get("nao_faturado_cmv", 0) or 0),
+            })
+
+    base = pd.DataFrame(linhas)
+
+    if base.empty:
+        return pd.DataFrame(columns=["Curva ABC", "Pedidos", "Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"])
+
+    resumo = (
+        base.groupby("Curva ABC", dropna=False)
+        .agg(
+            Pedidos=("pedido", "nunique"),
+            **{
+                "Saldo em Atraso": ("Saldo em Atraso", "sum"),
+                "Pré-nota em Atraso": ("Pré-nota em Atraso", "sum"),
+                "Não Faturado em Atraso": ("Não Faturado em Atraso", "sum"),
+            }
+        )
+        .reset_index()
+        .sort_values("Saldo em Atraso", ascending=False)
+    )
+
+    return resumo
+
+
+def exibir_tabela_resumo(df, altura=320):
+    st.dataframe(
+        formatar_df_moeda(df),
+        use_container_width=True,
+        hide_index=True,
+        height=altura
+    )
+
+
+def tela_analise_atrasos(analista=None):
+    titulo = "Análise dos atrasos" if analista is None else "Minha análise dos atrasos"
+    st.header(titulo)
+
+    itens = buscar_docs(
+        ativos=True,
+        analista=analista,
+        campos=CAMPOS_LISTAGEM,
+        tamanho_lote=8000
+    )
+
+    df = montar_df_itens(itens)
+
+    if df.empty:
+        st.info("Nenhum pedido ativo em atraso encontrado.")
+        return
+
+    key_prefix = "analise_atrasos_geral" if analista is None else f"analise_atrasos_{analista}"
+    pode_filtrar_analista = analista is None
+
+    df_filtrado = aplicar_filtros(
+        df,
+        pode_filtrar_analista=pode_filtrar_analista,
+        key_prefix=key_prefix
+    )
+
+    df_base = preparar_base_analise_atrasos(df_filtrado)
+
+    if df_base.empty:
+        st.info("Nenhum pedido encontrado com os filtros.")
+        return
+
+    total_saldo = df_base["saldo_cmv"].sum()
+    total_pre = df_base["pre_nota_cmv"].sum()
+    total_nao = df_base["nao_faturado_cmv"].sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Pedidos em atraso", int(df_base["pedido"].nunique()))
+    c2.metric("Saldo em atraso", formatar_moeda(total_saldo))
+    c3.metric("Pré-nota em atraso", formatar_moeda(total_pre))
+    c4.metric("Não faturado em atraso", formatar_moeda(total_nao))
+
+    st.divider()
+
+    st.subheader("Saldo por mês de atraso")
+    df_meses = resumo_meses_atraso(df_base)
+    if not df_meses.empty:
+        st.bar_chart(
+            df_meses.set_index("Mês do atraso")["Saldo em Atraso"],
+            use_container_width=True
+        )
+    exibir_tabela_resumo(df_meses, altura=260)
+
+    st.divider()
+
+    col_fornecedor, col_curva = st.columns(2)
+
+    with col_fornecedor:
+        st.subheader("Top 10 fornecedores em atraso")
+        df_fornecedor = resumo_agrupado(df_base, "fornecedor", "Fornecedor").head(10)
+        if not df_fornecedor.empty:
+            st.bar_chart(
+                df_fornecedor.set_index("Fornecedor")["Saldo em Atraso"],
+                use_container_width=True
+            )
+        exibir_tabela_resumo(df_fornecedor, altura=360)
+
+    with col_curva:
+        st.subheader("Curva ABC em atraso")
+        df_curva = resumo_curva_abc(df_base)
+        if not df_curva.empty:
+            st.bar_chart(
+                df_curva.set_index("Curva ABC")["Saldo em Atraso"],
+                use_container_width=True
+            )
+        exibir_tabela_resumo(df_curva, altura=360)
+
+        if "Curva ABC" in df_curva.columns and "SEM CURVA" in df_curva["Curva ABC"].astype(str).tolist():
+            st.caption("Se o arquivo possuir coluna Curva ABC/Curva, reprocesse a carteira para o painel separar A, B e C.")
+
+    st.divider()
+
+    st.subheader("Todos os departamentos em atraso")
+    df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
+    exibir_tabela_resumo(df_departamento, altura=420)
+
+    if analista is None:
+        st.divider()
+        st.subheader("Rank por analista")
+        df_analista = resumo_agrupado(df_base, "analista", "Analista")
+        exibir_tabela_resumo(df_analista, altura=340)
+
 
 
 def tela_exportar_acionar_comprador():
@@ -3222,7 +3525,7 @@ st.caption("Controle de pedidos atrasados.")
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Exportar Comprador", "Senhas", "Regras"],
+        ["Atualizar", "Carteira Geral", "Análise Atrasos", "Exportar Comprador", "Senhas", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -3232,6 +3535,9 @@ if usuario_logado == "Admin":
 
     elif pagina == "Carteira Geral":
         tela_carteira()
+
+    elif pagina == "Análise Atrasos":
+        tela_analise_atrasos()
 
     elif pagina == "Exportar Comprador":
         tela_exportar_acionar_comprador()
@@ -3245,13 +3551,16 @@ if usuario_logado == "Admin":
 else:
     pagina = st.radio(
         "Menu",
-        ["Minha Carteira", "Regras"],
+        ["Minha Carteira", "Análise Atrasos", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
     if pagina == "Minha Carteira":
         tela_carteira(usuario_logado)
+
+    elif pagina == "Análise Atrasos":
+        tela_analise_atrasos(usuario_logado)
 
     elif pagina == "Regras":
         tela_regras()
