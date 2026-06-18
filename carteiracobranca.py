@@ -2229,7 +2229,17 @@ def metricas(df):
     total_pre_nota = df["pre_nota_cmv"].sum() if "pre_nota_cmv" in df.columns else 0
     total_nao_faturado = df["nao_faturado_cmv"].sum() if "nao_faturado_cmv" in df.columns else 0
 
-    total_cobrado_3x = int((df["status"] == STATUS_COBRADO_3).sum()) if "status" in df.columns else 0
+    # Cobrado 3x precisa considerar a quantidade de cobranças,
+    # não só o status "COBRADO 3X".
+    # Ex.: quando o pedido vira "ACIONAR COMPRADOR" ou "COMPRADOR ACIONADO",
+    # o status muda, mas a coluna cobranças continua 3.
+    if "cobrancas" in df.columns:
+        total_cobrado_3x = int((pd.to_numeric(df["cobrancas"], errors="coerce").fillna(0) >= 3).sum())
+    elif "status" in df.columns:
+        total_cobrado_3x = int((df["status"] == STATUS_COBRADO_3).sum())
+    else:
+        total_cobrado_3x = 0
+
     total_acionar = int((df["status"] == STATUS_ACIONAR_COMPRADOR).sum()) if "status" in df.columns else 0
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -3112,6 +3122,16 @@ def tela_senhas_admin():
             atualizado_por=usuario_logado
         )
 
+        st.success(
+            f"Senha de {usuario_reset} redefinida. No próximo login, o usuário terá que escolher uma nova senha."
+        )
+
+    st.divider()
+    st.subheader("Como funciona")
+    st.write("1. O Admin redefine a senha temporária do usuário.")
+    st.write("2. O usuário entra com essa senha temporária.")
+    st.write("3. Antes de acessar a carteira, o sistema obriga o usuário a escolher uma nova senha.")
+    st.write("4. A partir daí, o usuário entra com a senha nova.")
 
 
 # =========================
