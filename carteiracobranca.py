@@ -2213,6 +2213,64 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
 
     return df
 
+
+def aplicar_filtros_por_estado(df, pode_filtrar_analista=True, key_prefix=""):
+    """
+    Aplica os mesmos filtros da tela usando o st.session_state.
+    Serve para os cards atualizarem mesmo ficando acima dos filtros.
+    """
+    if df.empty:
+        return df
+
+    df_filtrado = df.copy()
+
+    if pode_filtrar_analista and "analista" in df_filtrado.columns:
+        f_analista = st.session_state.get(f"{key_prefix}_analista", "TODOS")
+        if f_analista and f_analista != "TODOS":
+            df_filtrado = df_filtrado[df_filtrado["analista"] == f_analista]
+
+    if "departamento" in df_filtrado.columns:
+        deps_selecionados = st.session_state.get(f"{key_prefix}_departamentos", [])
+        if isinstance(deps_selecionados, str):
+            deps_selecionados = [deps_selecionados]
+
+        deps_validos = [
+            x for x in deps_selecionados
+            if x in df_filtrado["departamento"].dropna().astype(str).unique().tolist()
+        ]
+
+        if deps_validos:
+            df_filtrado = df_filtrado[df_filtrado["departamento"].isin(deps_validos)]
+
+    if "status" in df_filtrado.columns:
+        f_status = st.session_state.get(f"{key_prefix}_status", "TODOS")
+        if f_status and f_status != "TODOS":
+            df_filtrado = df_filtrado[df_filtrado["status"] == f_status]
+
+    if "fornecedor" in df_filtrado.columns:
+        fornecedores_selecionados = st.session_state.get(f"{key_prefix}_fornecedores", [])
+        if isinstance(fornecedores_selecionados, str):
+            fornecedores_selecionados = [fornecedores_selecionados]
+
+        fornecedores_validos = [
+            x for x in fornecedores_selecionados
+            if x in df_filtrado["fornecedor"].dropna().astype(str).unique().tolist()
+        ]
+
+        if fornecedores_validos:
+            df_filtrado = df_filtrado[df_filtrado["fornecedor"].isin(fornecedores_validos)]
+
+    busca = st.session_state.get(f"{key_prefix}_busca", "")
+    if busca and "pedido" in df_filtrado.columns:
+        busca_norm = norm(busca)
+        if busca_norm:
+            df_filtrado = df_filtrado[
+                df_filtrado["pedido"].astype(str).apply(lambda x: busca_norm in norm(x))
+            ]
+
+    return df_filtrado
+
+
 def metricas(df):
     if df.empty:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -2686,7 +2744,18 @@ def tela_carteira(analista=None):
         obs_por_doc = buscar_obs_ultima_cobranca(df["doc_id"].dropna().tolist())
         df["obs_cobranca"] = df["doc_id"].map(obs_por_doc).fillna("")
 
-    metricas(df)
+    key_prefix = "carteira_geral" if analista is None else f"carteira_{analista}"
+    pode_filtrar_analista = analista is None
+
+    # Os cards ficam acima dos filtros, então precisam ler os filtros pelo session_state
+    # para atualizar no rerun quando o usuário muda Departamento, Status, Fornecedor ou Pedido.
+    df_metricas = aplicar_filtros_por_estado(
+        df,
+        pode_filtrar_analista=pode_filtrar_analista,
+        key_prefix=key_prefix
+    )
+
+    metricas(df_metricas)
 
     if df.empty:
         st.info("Nenhum pedido ativo em atraso encontrado para este usuário.")
@@ -2694,8 +2763,8 @@ def tela_carteira(analista=None):
 
     df_filtrado = aplicar_filtros(
         df,
-        pode_filtrar_analista=(analista is None),
-        key_prefix="carteira_geral" if analista is None else f"carteira_{analista}"
+        pode_filtrar_analista=pode_filtrar_analista,
+        key_prefix=key_prefix
     )
 
     st.subheader("Pedidos em atraso para cobrar")
