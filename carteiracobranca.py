@@ -2229,14 +2229,24 @@ def metricas(df):
     total_pre_nota = df["pre_nota_cmv"].sum() if "pre_nota_cmv" in df.columns else 0
     total_nao_faturado = df["nao_faturado_cmv"].sum() if "nao_faturado_cmv" in df.columns else 0
 
-    # Cobrado 3x precisa considerar a quantidade de cobranças,
-    # não só o status "COBRADO 3X".
-    # Ex.: quando o pedido vira "ACIONAR COMPRADOR" ou "COMPRADOR ACIONADO",
-    # o status muda, mas a coluna cobranças continua 3.
+    # Cobrado 3x deve contar PEDIDOS, não a soma de cobranças.
+    # Ex.: Pedido A com 3 cobranças = 1 no card.
+    #      Pedido B com 3 cobranças = 2 no card.
     if "cobrancas" in df.columns:
-        total_cobrado_3x = int((pd.to_numeric(df["cobrancas"], errors="coerce").fillna(0) >= 3).sum())
+        mask_cobrado_3x = pd.to_numeric(df["cobrancas"], errors="coerce").fillna(0) >= 3
+
+        if "pedido" in df.columns:
+            total_cobrado_3x = int(df.loc[mask_cobrado_3x, "pedido"].dropna().astype(str).nunique())
+        else:
+            total_cobrado_3x = int(mask_cobrado_3x.sum())
+
     elif "status" in df.columns:
-        total_cobrado_3x = int((df["status"] == STATUS_COBRADO_3).sum())
+        if "pedido" in df.columns:
+            total_cobrado_3x = int(
+                df.loc[df["status"] == STATUS_COBRADO_3, "pedido"].dropna().astype(str).nunique()
+            )
+        else:
+            total_cobrado_3x = int((df["status"] == STATUS_COBRADO_3).sum())
     else:
         total_cobrado_3x = 0
 
