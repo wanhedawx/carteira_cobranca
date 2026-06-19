@@ -3003,7 +3003,7 @@ def tela_analise_atrasos(analista=None):
     df_meses = resumo_meses_atraso(df_base)
     df_curva = resumo_curva_abc(df_base)
 
-    col_meses, col_curva = st.columns([2.25, 1])
+    col_meses, col_curva = st.columns([1.7, 1])
 
     with col_meses:
         st.subheader("Saldo por mês de atraso")
@@ -3042,29 +3042,34 @@ def tela_analise_atrasos(analista=None):
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
-    # Aqui é SOMENTE o Saldo em Atraso, sem empilhar Pré-nota e Não Faturado.
+    # Aqui é SOMENTE o Saldo em Atraso, em formato mais compacto para leitura.
     base = df_meses.copy()
 
     if "Mês do atraso" not in base.columns or "Saldo em Atraso" not in base.columns:
         return
 
     base["Saldo em Atraso"] = pd.to_numeric(base["Saldo em Atraso"], errors="coerce").fillna(0)
+    base = base[base["Saldo em Atraso"] > 0].copy()
+    if base.empty:
+        return
+
     base["Label"] = base["Saldo em Atraso"].apply(formatar_label_grafico)
+    ordem_meses = base["Mês do atraso"].tolist()
 
     bars = (
         alt.Chart(base)
-        .mark_bar(size=48, cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#334155")
+        .mark_bar(size=34, cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#334155")
         .encode(
             x=alt.X(
                 "Mês do atraso:N",
                 title=None,
-                sort=base["Mês do atraso"].tolist(),
-                axis=alt.Axis(labelAngle=-20, labelFontSize=11, labelPadding=8)
+                sort=ordem_meses,
+                axis=alt.Axis(labelAngle=0, labelFontSize=10, labelPadding=10)
             ),
             y=alt.Y(
                 "Saldo em Atraso:Q",
                 title=None,
-                axis=alt.Axis(labelFontSize=11, grid=True)
+                axis=alt.Axis(labelFontSize=10, grid=True, tickCount=5)
             ),
             tooltip=[
                 alt.Tooltip("Mês do atraso:N", title="Mês"),
@@ -3076,17 +3081,21 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
 
     labels = (
         alt.Chart(base)
-        .mark_text(dy=-10, color="#cbd5e1", fontSize=11, fontWeight="bold")
+        .mark_text(dy=-8, color="#94a3b8", fontSize=10, fontWeight="bold")
         .encode(
-            x=alt.X("Mês do atraso:N", sort=base["Mês do atraso"].tolist()),
+            x=alt.X("Mês do atraso:N", sort=ordem_meses),
             y=alt.Y("Saldo em Atraso:Q"),
             text="Label:N"
         )
     )
 
-    chart = (bars + labels).properties(height=285)
+    chart = (
+        (bars + labels)
+        .properties(width=620, height=220)
+        .configure_view(strokeOpacity=0)
+    )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, use_container_width=False)
 
 
 def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
