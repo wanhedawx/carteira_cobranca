@@ -182,7 +182,7 @@ st.markdown("""
         display: inline-block;
         padding: 4px 10px;
         border-radius: 999px;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         border: 1px solid rgba(128,128,128,0.35);
     }
@@ -3176,14 +3176,14 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             width: 100%;
             font-family: Inter, "Segoe UI", Arial, sans-serif;
             display: grid;
-            grid-template-columns: 1.05fr .78fr 1.32fr 1.05fr;
-            gap: 18px;
+            grid-template-columns: 1.15fr 0.92fr 1.55fr;
+            gap: 22px;
             align-items: start;
             margin: 2px 0 24px 0;
         }}
         .dash-card {{
             background: transparent;
-            min-height: 285px;
+            min-height: 300px;
             overflow: visible;
         }}
         .dash-card h3 {{
@@ -3195,7 +3195,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             letter-spacing: -0.02em;
         }}
         .chart-area {{
-            height: 228px;
+            height: 245px;
             position: relative;
             overflow: visible;
         }}
@@ -3217,7 +3217,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             gap: 6px;
         }}
         .meses {{
-            height: 228px;
+            height: 245px;
             display: flex;
             align-items: flex-end;
             justify-content: space-around;
@@ -3265,11 +3265,12 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             font-weight: 650;
         }}
         .donut-wrap {{
-            height: 228px;
+            height: 245px;
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
+            padding-top: 10px;
             overflow: visible;
         }}
         .donut {{
@@ -3281,7 +3282,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         }}
         .donut-hole {{
             position: absolute;
-            inset: 39px;
+            inset: 42px;
             background: var(--background-color, #fff);
             border-radius: 50%;
         }}
@@ -3296,15 +3297,15 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             white-space: nowrap;
             box-shadow: 0 1px 3px rgba(15,23,42,.10);
         }}
-        .pct-a {{ left: -40px; top: 104px; }}
-        .pct-b {{ right: -48px; top: 90px; }}
-        .pct-c {{ right: -42px; top: 28px; }}
+        .pct-a {{ left: -46px; top: 114px; }}
+        .pct-b {{ right: -54px; top: 98px; }}
+        .pct-c {{ right: -48px; top: 32px; }}
         .legenda-curva {{
             display: flex;
             justify-content: center;
             gap: 16px;
-            margin-top: 14px;
-            font-size: 12px;
+            margin-top: 22px;
+            font-size: 11px;
             color: #334155;
         }}
         .legenda-curva span {{
@@ -3320,12 +3321,12 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             display: inline-block;
         }}
         .forn-chart {{
-            height: 228px;
+            height: 245px;
             display: flex;
             flex-direction: column;
-            gap: 7px;
+            gap: 9px;
             overflow: hidden;
-            padding: 2px 4px 0 2px;
+            padding: 8px 8px 0 4px;
         }}
 
         .forn-item {{
@@ -3346,7 +3347,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         .forn-left {{
             display: flex;
             align-items: center;
-            gap: 7px;
+            gap: 9px;
             min-width: 0;
             flex: 1;
         }}
@@ -3397,57 +3398,9 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             border-radius: 999px;
         }}
 
-        .deps {{
-            height: 228px;
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-around;
-            gap: 5px;
-            padding: 18px 2px 52px 24px;
-            border-bottom: 1px solid rgba(148,163,184,.35);
-            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.20) 39px);
-        }}
-        .dep-item {{
-            height: 100%;
-            flex: 1;
-            position: relative;
-            display: flex;
-            align-items: flex-end;
-            justify-content: center;
-            min-width: 24px;
-        }}
-        .dep-bar {{
-            width: 22px;
-            background: linear-gradient(180deg, #334155, #172033);
-            border-radius: 4px 4px 0 0;
-        }}
-        .dep-label {{
-            position: absolute;
-            transform: translateY(-100%);
-            margin-bottom: 6px;
-            color: #0f172a;
-            background: rgba(255,255,255,.96);
-            border-radius: 5px;
-            padding: 1px 4px;
-            font-size: 9px;
-            font-weight: 900;
-            white-space: nowrap;
-            z-index: 3;
-        }}
-        .dep-name {{
-            position: absolute;
-            bottom: -45px;
-            transform: rotate(-45deg);
-            font-size: 9px;
-            line-height: 1.05;
-            color: #475569;
-            width: 70px;
-            text-align: right;
-            font-weight: 700;
-        }}
         @media (max-width: 1500px) {{
             .dash4 {{
-                grid-template-columns: 1fr 1fr;
+                grid-template-columns: 1fr;
             }}
         }}
     </style>
@@ -3464,10 +3417,6 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         <div class="dash-card">
             <h3>Top 10 fornecedores em atraso</h3>
             <div class="chart-area forn-chart">{fornecedores_html}</div>
-        </div>
-        <div class="dash-card">
-            <h3>Departamentos em atraso</h3>
-            <div class="chart-area deps">{deps_html}</div>
         </div>
     </div>
     """
