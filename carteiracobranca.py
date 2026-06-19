@@ -3098,13 +3098,13 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         curva_html = f"""
             <div class="donut-wrap">
-                <div class="donut" style="background: conic-gradient(#172033 0 {a_end:.2f}%, #475569 {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
+                <div class="donut" style="background: conic-gradient(var(--dash-bar-b) 0 {a_end:.2f}%, var(--dash-bar-a) {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
                     <div class="donut-hole"></div>
                 </div>
 
                 <div class="legenda-curva legenda-curva-com-percentual">
-                    <span><i style="background:#172033"></i>A <b>{pct_a_txt}%</b></span>
-                    <span><i style="background:#475569"></i>B <b>{pct_b_txt}%</b></span>
+                    <span><i style="background:var(--dash-bar-b)"></i>A <b>{pct_a_txt}%</b></span>
+                    <span><i style="background:var(--dash-bar-a)"></i>B <b>{pct_b_txt}%</b></span>
                     <span><i style="background:#94a3b8"></i>C <b>{pct_c_txt}%</b></span>
                 </div>
             </div>
@@ -3176,36 +3176,38 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     html = f"""
     <style>
 
-        /* Tema fixo claro para o componente HTML.
-           Assim ele fica legível tanto no Streamlit claro quanto no escuro. */
+        /* Tema neutro fixo do painel: fica bom no dark e aceitável no light */
         :root {{
-            --dash-text: #0f172a;
-            --dash-muted: #475569;
-            --dash-grid: rgba(148,163,184,.22);
-            --dash-bar-a: #334155;
-            --dash-bar-b: #172033;
-            --dash-track: rgba(148,163,184,.20);
-            --dash-label-bg: rgba(255,255,255,.98);
+            --dash-panel-bg: #111827;
+            --dash-panel-border: rgba(148,163,184,.22);
+            --dash-text: #f8fafc;
+            --dash-muted: #cbd5e1;
+            --dash-grid: rgba(148,163,184,.16);
+            --dash-bar-a: #64748b;
+            --dash-bar-b: #e2e8f0;
+            --dash-track: rgba(148,163,184,.24);
+            --dash-label-bg: rgba(248,250,252,.95);
             --dash-label-text: #0f172a;
-            --dash-rank-bg: #e2e8f0;
-            --dash-rank-text: #172033;
-            --dash-hole: #ffffff;
+            --dash-rank-bg: #334155;
+            --dash-rank-text: #f8fafc;
+            --dash-hole: #111827;
+            --dash-shadow: rgba(0,0,0,.22);
         }}
 
         .dash4 {{
             width: 100%;
             font-family: Inter, "Segoe UI", Arial, sans-serif;
             display: grid;
-            grid-template-columns: 1.15fr 0.92fr 1.55fr;
-            gap: 22px;
+            grid-template-columns: 1.12fr .90fr 1.55fr;
+            gap: 24px;
             align-items: start;
             margin: 0 0 24px 0;
-            background: #ffffff;
-            color: #0f172a;
-            border: 1px solid #e2e8f0;
+            background: var(--dash-panel-bg);
+            color: var(--dash-text);
+            border: 1px solid var(--dash-panel-border);
             border-radius: 16px;
-            padding: 18px 20px 28px;
-            box-shadow: 0 2px 10px rgba(15,23,42,.06);
+            padding: 18px 20px 30px;
+            box-shadow: 0 4px 16px var(--dash-shadow);
         }}
         .dash-card {{
             background: transparent;
@@ -3309,7 +3311,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         .donut-hole {{
             position: absolute;
             inset: 50px;
-            background: #ffffff;
+            background: var(--dash-hole);
             border-radius: 50%;
         }}
         .legenda-curva {{
@@ -3401,7 +3403,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-value {{
             font-size: 10px;
-            color: var(--dash-label-text);
+            color: var(--dash-text);
             font-weight: 900;
             white-space: nowrap;
             flex: 0 0 auto;
@@ -3444,7 +3446,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
-    components.html(html, height=440, scrolling=False)
+    components.html(html, height=430, scrolling=False)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
