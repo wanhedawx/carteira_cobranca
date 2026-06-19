@@ -423,6 +423,25 @@ def identificar_analista(departamento):
     return "SEM ANALISTA"
 
 
+
+def normalizar_curva_abc(valor):
+    txt = norm(valor)
+
+    if not txt or txt in ["NAN", "NONE", "-", "SEM CURVA", "SEM CLASSIFICACAO"]:
+        return ""
+
+    if txt == "A" or txt.startswith("A ") or "CURVA A" in txt:
+        return "A"
+
+    if txt == "B" or txt.startswith("B ") or "CURVA B" in txt:
+        return "B"
+
+    if txt == "C" or txt.startswith("C ") or "CURVA C" in txt:
+        return "C"
+
+    return txt
+
+
 def primeiro_valor(series):
     for v in series:
         if v is None or pd.isna(v):
@@ -1373,8 +1392,8 @@ def encontrar_colunas_itens(df):
     ])
 
     col_curva_abc = encontrar_coluna_fixa(df, [
-        "Curva ABC", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
-        "Curva Produto", "Curva Item", "Curva Mercadoria"
+        "Curva ABC", "Curva CIA", "CURVA CIA", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Curva Produto", "Curva Item", "Curva Mercadoria", "Curva CIA Produto", "Curva CIA Item"
     ])
 
     mapa = {norm(c): c for c in df.columns}
@@ -1486,7 +1505,7 @@ def montar_itens_do_pedido(grupo, colunas_itens, colunas_valores):
             nao_faturado_item = converter_numero(linha.get(col_nao_faturado, 0))
 
         if col_curva_abc and col_curva_abc in linha.index:
-            curva_abc = str(linha.get(col_curva_abc, "") or "").strip().upper()
+            curva_abc = normalizar_curva_abc(linha.get(col_curva_abc, ""))
 
         if codigo or descricao or qtd or saldo_item or pre_nota_item or nao_faturado_item:
             itens.append({
@@ -1530,8 +1549,8 @@ def mapear_colunas_fixas(df):
     ])
 
     col_curva_abc = encontrar_coluna_fixa(df, [
-        "Curva ABC", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
-        "Curva Produto", "Curva Item", "Curva Mercadoria"
+        "Curva ABC", "Curva CIA", "CURVA CIA", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Curva Produto", "Curva Item", "Curva Mercadoria", "Curva CIA Produto", "Curva CIA Item"
     ])
 
     # Valores R$/CMV: procura sem confundir com colunas QTD.
@@ -1597,7 +1616,7 @@ def agregar_por_pedido(df, colunas):
     base["_nao_faturado_cmv"] = base[colunas["nao_faturado_cmv"]].apply(converter_numero)
 
     if colunas.get("curva_abc"):
-        base["_curva_abc"] = base[colunas["curva_abc"]].astype(str).str.strip().str.upper()
+        base["_curva_abc"] = base[colunas["curva_abc"]].apply(normalizar_curva_abc)
     else:
         base["_curva_abc"] = ""
 
@@ -1710,7 +1729,7 @@ def preparar_linhas(df):
             "pre_nota_cmv": float(row["pre_nota_cmv"] or 0),
             "nao_faturado_cmv": float(row["nao_faturado_cmv"] or 0),
             "qtd_itens": int(row["qtd_itens"] or 0),
-            "curva_abc": str(row.get("curva_abc", "") or "").strip().upper(),
+            "curva_abc": normalizar_curva_abc(row.get("curva_abc", "")),
             "itens_json": row.get("itens_json", []),
         }
 
@@ -3090,7 +3109,7 @@ def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
         )
         return
 
-    base["Curva ABC"] = base["Curva ABC"].astype(str).str.strip().str.upper()
+    base["Curva ABC"] = base["Curva ABC"].apply(normalizar_curva_abc)
     base["Saldo em Atraso"] = pd.to_numeric(base["Saldo em Atraso"], errors="coerce").fillna(0)
 
     base_abc = base[
