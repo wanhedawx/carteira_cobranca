@@ -207,7 +207,7 @@ st.markdown("""
     }
 
     .analise-empty-curva {
-        border: 1px solid rgba(148,163,184,.22);
+        border: 1px solid var(--dash-grid);
         background: rgba(148,163,184,.06);
         border-radius: 12px;
         padding: 16px 16px;
@@ -3098,13 +3098,13 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         curva_html = f"""
             <div class="donut-wrap">
-                <div class="donut" style="background: conic-gradient(#172033 0 {a_end:.2f}%, #475569 {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
+                <div class="donut" style="background: conic-gradient(var(--dash-bar-b) 0 {a_end:.2f}%, var(--dash-bar-a) {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
                     <div class="donut-hole"></div>
                 </div>
 
                 <div class="legenda-curva legenda-curva-com-percentual">
-                    <span><i style="background:#172033"></i>A <b>{pct_a_txt}%</b></span>
-                    <span><i style="background:#475569"></i>B <b>{pct_b_txt}%</b></span>
+                    <span><i style="background:var(--dash-bar-b)"></i>A <b>{pct_a_txt}%</b></span>
+                    <span><i style="background:var(--dash-bar-a)"></i>B <b>{pct_b_txt}%</b></span>
                     <span><i style="background:#94a3b8"></i>C <b>{pct_c_txt}%</b></span>
                 </div>
             </div>
@@ -3175,6 +3175,38 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
     html = f"""
     <style>
+
+        /* Tema do bloco HTML: funciona no dark e no light */
+        :root {{
+            --dash-text: #0f172a;
+            --dash-muted: #475569;
+            --dash-grid: var(--dash-grid);
+            --dash-bar-a: #334155;
+            --dash-bar-b: #172033;
+            --dash-track: rgba(226,232,240,.70);
+            --dash-label-bg: rgba(255,255,255,.96);
+            --dash-label-text: #0f172a;
+            --dash-rank-bg: #e2e8f0;
+            --dash-rank-text: #172033;
+            --dash-hole: #ffffff;
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --dash-text: #f8fafc;
+                --dash-muted: #cbd5e1;
+                --dash-grid: var(--dash-grid);
+                --dash-bar-a: #64748b;
+                --dash-bar-b: #cbd5e1;
+                --dash-track: rgba(148,163,184,.28);
+                --dash-label-bg: rgba(15,23,42,.94);
+                --dash-label-text: #f8fafc;
+                --dash-rank-bg: #334155;
+                --dash-rank-text: #f8fafc;
+                --dash-hole: #0f1117;
+            }}
+        }}
+
         .dash4 {{
             width: 100%;
             font-family: Inter, "Segoe UI", Arial, sans-serif;
@@ -3193,7 +3225,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             font-size: 20px;
             line-height: 1.15;
             margin: 0 0 14px 0;
-            color: var(--text-color, #0f172a);
+            color: var(--dash-text);
             font-weight: 800;
             letter-spacing: -0.02em;
         }}
@@ -3210,7 +3242,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #64748b;
+            color: var(--dash-muted);
             font-size: 13px;
             text-align: center;
             padding: 14px;
@@ -3227,7 +3259,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             gap: 8px;
             padding: 18px 8px 44px 32px;
             border-bottom: 1px solid rgba(148,163,184,.35);
-            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.20) 39px);
+            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, var(--dash-grid) 39px);
         }}
         .mes-item {{
             height: 100%;
@@ -3240,7 +3272,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         }}
         .barra-mes {{
             width: 30px;
-            background: linear-gradient(180deg, #334155, #172033);
+            background: linear-gradient(180deg, var(--dash-bar-a), var(--dash-bar-b));
             border-radius: 5px 5px 0 0;
             box-shadow: 0 2px 6px rgba(15,23,42,.20);
         }}
@@ -3248,21 +3280,21 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             position: absolute;
             transform: translateY(-100%);
             margin-bottom: 7px;
-            color: #0f172a;
-            background: rgba(255,255,255,.96);
+            color: var(--dash-label-text);
+            background: var(--dash-label-bg);
             border-radius: 5px;
             padding: 2px 5px;
             font-size: 11px;
             font-weight: 900;
             white-space: nowrap;
             z-index: 3;
-            box-shadow: 0 1px 3px rgba(15,23,42,.10);
+            box-shadow: 0 1px 5px rgba(0,0,0,.22);
         }}
         .nome-mes {{
             position: absolute;
             bottom: -34px;
             font-size: 10px;
-            color: #475569;
+            color: var(--dash-muted);
             transform: rotate(-35deg);
             white-space: nowrap;
             font-weight: 650;
@@ -3286,7 +3318,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         .donut-hole {{
             position: absolute;
             inset: 50px;
-            background: var(--background-color, #fff);
+            background: var(--dash-hole);
             border-radius: 50%;
         }}
         .legenda-curva {{
@@ -3295,7 +3327,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             gap: 18px;
             margin-top: 46px;
             font-size: 13px;
-            color: #334155;
+            color: var(--dash-muted);
             flex-wrap: wrap;
         }}
 
@@ -3306,7 +3338,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .legenda-curva-com-percentual b {{
             margin-left: 3px;
-            color: #0f172a;
+            color: var(--dash-label-text);
         }}
         .legenda-curva span {{
             display: inline-flex;
@@ -3356,8 +3388,8 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             width: 17px;
             height: 17px;
             border-radius: 50%;
-            background: #e2e8f0;
-            color: #172033;
+            background: var(--dash-rank-bg);
+            color: var(--dash-rank-text);
             font-size: 10px;
             font-weight: 900;
             display: inline-flex;
@@ -3368,7 +3400,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-name {{
             font-size: 10px;
-            color: #334155;
+            color: var(--dash-muted);
             font-weight: 800;
             white-space: nowrap;
             overflow: hidden;
@@ -3378,7 +3410,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-value {{
             font-size: 10px;
-            color: #0f172a;
+            color: var(--dash-label-text);
             font-weight: 900;
             white-space: nowrap;
             flex: 0 0 auto;
@@ -3386,7 +3418,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-track {{
             height: 11px;
-            background: rgba(226,232,240,.70);
+            background: var(--dash-track);
             border-radius: 999px;
             overflow: hidden;
             margin-left: 24px;
@@ -3394,7 +3426,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-fill {{
             height: 100%;
-            background: linear-gradient(90deg, #475569, #172033);
+            background: linear-gradient(90deg, var(--dash-bar-a), var(--dash-bar-b));
             border-radius: 999px;
         }}
 
