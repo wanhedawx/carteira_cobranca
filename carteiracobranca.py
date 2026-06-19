@@ -10,7 +10,6 @@ import io
 import re
 import json
 import secrets as py_secrets
-
 # =========================
 # CONFIGURAÇÕES
 # =========================
