@@ -193,6 +193,40 @@ st.markdown("""
     .fora {background:#e2e8f0;color:#475569;}
     .agendado {background:#dbeafe;color:#1e40af;}
     .cancelado {background:#f3f4f6;color:#374151;}
+
+    /* Dashboard análise atrasos mais compacto */
+    [data-testid="stMetric"] {
+        padding: 10px 12px !important;
+        min-height: 82px !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.45rem !important;
+    }
+
+    .analise-empty-curva {
+        border: 1px solid rgba(148,163,184,.22);
+        background: rgba(148,163,184,.06);
+        border-radius: 12px;
+        padding: 16px 16px;
+        min-height: 205px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .analise-empty-curva h4 {
+        margin: 0 0 6px 0;
+        font-size: 16px;
+    }
+
+    .analise-empty-curva p {
+        margin: 0;
+        color: #94a3b8;
+        font-size: 13px;
+        line-height: 1.35;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -2907,14 +2941,23 @@ def tela_analise_atrasos(analista=None):
 
     st.divider()
 
-    st.subheader("Saldo por mês de atraso")
     df_meses = resumo_meses_atraso(df_base)
-    if not df_meses.empty:
-        exibir_grafico_meses_empilhado(df_meses)
+    df_curva = resumo_curva_abc(df_base)
+
+    col_meses, col_curva = st.columns([2.25, 1])
+
+    with col_meses:
+        st.subheader("Saldo por mês de atraso")
+        if not df_meses.empty:
+            exibir_grafico_meses_empilhado(df_meses)
+
+    with col_curva:
+        st.subheader("Curva ABC em atraso")
+        exibir_grafico_curva_rosca(df_curva)
 
     st.divider()
 
-    col_fornecedor, col_curva = st.columns(2)
+    col_fornecedor, col_departamento = st.columns([1, 1.2])
 
     with col_fornecedor:
         st.subheader("Top 10 fornecedores em atraso")
@@ -2922,21 +2965,14 @@ def tela_analise_atrasos(analista=None):
         if not df_fornecedor.empty:
             exibir_grafico_fornecedores(df_fornecedor)
 
-    with col_curva:
-        st.subheader("Curva ABC em atraso")
-        df_curva = resumo_curva_abc(df_base)
-        if not df_curva.empty:
-            exibir_grafico_curva_rosca(df_curva)
-        if "Curva ABC" in df_curva.columns and "SEM CURVA" in df_curva["Curva ABC"].astype(str).tolist():
-            st.caption("A curva está como 'Sem Curva' porque o arquivo/base não trouxe classificação ABC separada.")
+    with col_departamento:
+        st.subheader("Departamentos em atraso")
+        df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
+        if not df_departamento.empty:
+            exibir_grafico_departamentos_vertical(df_departamento)
 
-    st.divider()
-
-    st.subheader("Todos os departamentos em atraso")
-    df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
-    if not df_departamento.empty:
-        exibir_grafico_departamentos_vertical(df_departamento)
-    exibir_tabela_resumo(df_departamento, altura=420)
+    st.subheader("Todos os departamentos")
+    exibir_tabela_resumo(df_departamento, altura=300)
 
     if analista is None:
         st.divider()
@@ -2949,92 +2985,198 @@ def tela_analise_atrasos(analista=None):
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
     base = df_meses.copy()
     cols = [c for c in ["Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"] if c in base.columns]
+
     if not cols or "Mês do atraso" not in base.columns:
         return
+
     melted = base[["Mês do atraso"] + cols].melt(
         id_vars="Mês do atraso",
         value_vars=cols,
         var_name="Tipo",
         value_name="Valor"
     )
+
     melted["Valor"] = pd.to_numeric(melted["Valor"], errors="coerce").fillna(0)
+
     color_scale = alt.Scale(
         domain=["Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"],
-        range=["#475569", "#64748b", "#94a3b8"]
+        range=["#334155", "#475569", "#64748b"]
     )
+
     chart = (
         alt.Chart(melted)
-        .mark_bar()
+        .mark_bar(size=48, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
-            x=alt.X("Mês do atraso:N", title="Mês"),
-            y=alt.Y("sum(Valor):Q", title="Valor"),
-            color=alt.Color("Tipo:N", title="Composição", scale=color_scale),
-            tooltip=["Mês do atraso:N", "Tipo:N", alt.Tooltip("sum(Valor):Q", title="Valor", format=",.2f")]
+            x=alt.X(
+                "Mês do atraso:N",
+                title=None,
+                axis=alt.Axis(labelAngle=-20, labelFontSize=11, labelPadding=8)
+            ),
+            y=alt.Y(
+                "sum(Valor):Q",
+                title=None,
+                axis=alt.Axis(labelFontSize=11, grid=True)
+            ),
+            color=alt.Color(
+                "Tipo:N",
+                title=None,
+                scale=color_scale,
+                legend=alt.Legend(orient="bottom", direction="horizontal", labelFontSize=11)
+            ),
+            tooltip=[
+                alt.Tooltip("Mês do atraso:N", title="Mês"),
+                alt.Tooltip("Tipo:N", title="Tipo"),
+                alt.Tooltip("sum(Valor):Q", title="Valor", format=",.2f")
+            ]
         )
-        .properties(height=360)
+        .properties(height=285)
     )
+
     st.altair_chart(chart, use_container_width=True)
 
 
 def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
     base = df_fornecedor.copy()
+
     if "Fornecedor" not in base.columns or "Saldo em Atraso" not in base.columns:
         return
-    base["Fornecedor Curto"] = base["Fornecedor"].astype(str).apply(lambda x: x if len(x) <= 28 else x[:28] + "...")
+
+    base = base.sort_values("Saldo em Atraso", ascending=True)
+    base["Fornecedor Curto"] = base["Fornecedor"].astype(str).apply(
+        lambda x: x if len(x) <= 34 else x[:34] + "..."
+    )
+
     chart = (
         alt.Chart(base)
-        .mark_bar(color="#475569")
+        .mark_bar(color="#334155", cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
         .encode(
-            x=alt.X("Fornecedor Curto:N", sort="-y", title="Fornecedor", axis=alt.Axis(labelAngle=-35)),
-            y=alt.Y("Saldo em Atraso:Q", title="Saldo em Atraso"),
-            tooltip=["Fornecedor:N", "Pedidos:Q", alt.Tooltip("Saldo em Atraso:Q", format=",.2f"), alt.Tooltip("Pré-nota em Atraso:Q", format=",.2f"), alt.Tooltip("Não Faturado em Atraso:Q", format=",.2f")]
+            y=alt.Y(
+                "Fornecedor Curto:N",
+                sort=None,
+                title=None,
+                axis=alt.Axis(labelFontSize=10)
+            ),
+            x=alt.X(
+                "Saldo em Atraso:Q",
+                title=None,
+                axis=alt.Axis(labelFontSize=10)
+            ),
+            tooltip=[
+                alt.Tooltip("Fornecedor:N", title="Fornecedor"),
+                alt.Tooltip("Pedidos:Q", title="Pedidos"),
+                alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
+                alt.Tooltip("Pré-nota em Atraso:Q", title="Pré-nota", format=",.2f"),
+                alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
+            ]
         )
-        .properties(height=360)
+        .properties(height=260)
     )
+
     st.altair_chart(chart, use_container_width=True)
 
 
 def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
     base = df_curva.copy()
+
     if "Curva ABC" not in base.columns or "Saldo em Atraso" not in base.columns:
+        st.markdown(
+            """
+            <div class="analise-empty-curva">
+                <h4>Curva ABC não encontrada</h4>
+                <p>O arquivo/base não trouxe uma coluna de Curva ABC para montar a rosca.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         return
+
+    base["Curva ABC"] = base["Curva ABC"].astype(str).str.strip().str.upper()
     base["Saldo em Atraso"] = pd.to_numeric(base["Saldo em Atraso"], errors="coerce").fillna(0)
-    color_map = {
-        "A": "#334155",
-        "B": "#475569",
-        "C": "#64748b",
-        "SEM CURVA": "#94a3b8",
-    }
-    domain = base["Curva ABC"].astype(str).tolist()
-    colors = [color_map.get(x, "#64748b") for x in domain]
+
+    base_abc = base[
+        (base["Curva ABC"].isin(["A", "B", "C"])) &
+        (base["Saldo em Atraso"] > 0)
+    ].copy()
+
+    if base_abc.empty:
+        total_sem_curva = base["Saldo em Atraso"].sum()
+        pedidos_sem_curva = int(base["Pedidos"].sum()) if "Pedidos" in base.columns else 0
+
+        st.markdown(
+            f"""
+            <div class="analise-empty-curva">
+                <h4>Sem Curva ABC no arquivo</h4>
+                <p>A base está vindo sem classificação A/B/C.</p>
+                <p><b>Saldo sem curva:</b> {formatar_moeda(total_sem_curva)}<br>
+                <b>Pedidos:</b> {pedidos_sem_curva}</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        return
+
+    domain = ["A", "B", "C"]
+    colors = ["#1f2937", "#475569", "#94a3b8"]
+
     arc = (
-        alt.Chart(base)
-        .mark_arc(innerRadius=70, outerRadius=120)
+        alt.Chart(base_abc)
+        .mark_arc(innerRadius=48, outerRadius=88)
         .encode(
             theta=alt.Theta("Saldo em Atraso:Q"),
-            color=alt.Color("Curva ABC:N", legend=alt.Legend(title="Curva"), scale=alt.Scale(domain=domain, range=colors)),
-            tooltip=["Curva ABC:N", "Pedidos:Q", alt.Tooltip("Saldo em Atraso:Q", format=",.2f"), alt.Tooltip("Pré-nota em Atraso:Q", format=",.2f"), alt.Tooltip("Não Faturado em Atraso:Q", format=",.2f")]
+            color=alt.Color(
+                "Curva ABC:N",
+                title=None,
+                scale=alt.Scale(domain=domain, range=colors),
+                legend=alt.Legend(orient="bottom", direction="horizontal", labelFontSize=11)
+            ),
+            tooltip=[
+                alt.Tooltip("Curva ABC:N", title="Curva"),
+                alt.Tooltip("Pedidos:Q", title="Pedidos"),
+                alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
+                alt.Tooltip("Pré-nota em Atraso:Q", title="Pré-nota", format=",.2f"),
+                alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
+            ]
         )
-        .properties(height=360)
+        .properties(height=285)
     )
-    text = alt.Chart(pd.DataFrame({"label": ["Curva ABC"]})).mark_text(fontSize=14, fontWeight="bold", color="#cbd5e1").encode(text="label:N")
-    st.altair_chart(arc + text, use_container_width=True)
+
+    st.altair_chart(arc, use_container_width=True)
 
 
 def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
     base = df_departamento.copy()
+
     if "Departamento" not in base.columns or "Saldo em Atraso" not in base.columns:
         return
+
+    base = base.sort_values("Saldo em Atraso", ascending=False)
+
     chart = (
         alt.Chart(base)
-        .mark_bar(color="#475569")
+        .mark_bar(color="#334155", cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
-            x=alt.X("Departamento:N", sort="-y", title="Departamento", axis=alt.Axis(labelAngle=-25)),
-            y=alt.Y("Saldo em Atraso:Q", title="Saldo em Atraso"),
-            tooltip=["Departamento:N", "Pedidos:Q", alt.Tooltip("Saldo em Atraso:Q", format=",.2f"), alt.Tooltip("Pré-nota em Atraso:Q", format=",.2f"), alt.Tooltip("Não Faturado em Atraso:Q", format=",.2f")]
+            x=alt.X(
+                "Departamento:N",
+                sort="-y",
+                title=None,
+                axis=alt.Axis(labelAngle=-25, labelFontSize=10)
+            ),
+            y=alt.Y(
+                "Saldo em Atraso:Q",
+                title=None,
+                axis=alt.Axis(labelFontSize=10)
+            ),
+            tooltip=[
+                alt.Tooltip("Departamento:N", title="Departamento"),
+                alt.Tooltip("Pedidos:Q", title="Pedidos"),
+                alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
+                alt.Tooltip("Pré-nota em Atraso:Q", title="Pré-nota", format=",.2f"),
+                alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
+            ]
         )
-        .properties(height=360)
+        .properties(height=270)
     )
+
     st.altair_chart(chart, use_container_width=True)
 
 
