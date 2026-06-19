@@ -10,6 +10,7 @@ import io
 import re
 import json
 import secrets as py_secrets
+
 # =========================
 # CONFIGURAÇÕES
 # =========================
@@ -340,6 +341,25 @@ def formatar_moeda(valor):
         return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return str(valor or "0,00")
+
+
+def formatar_label_grafico(valor):
+    try:
+        v = float(converter_numero(valor))
+    except Exception:
+        try:
+            v = float(valor)
+        except Exception:
+            return str(valor)
+
+    abs_v = abs(v)
+    if abs_v >= 1_000_000:
+        s = f"{v/1_000_000:,.2f} Mi"
+    elif abs_v >= 1_000:
+        s = f"{v/1_000:,.1f} Mil"
+    else:
+        s = f"{v:,.0f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def formatar_df_moeda(df):
@@ -3029,8 +3049,9 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
         return
 
     base["Saldo em Atraso"] = pd.to_numeric(base["Saldo em Atraso"], errors="coerce").fillna(0)
+    base["Label"] = base["Saldo em Atraso"].apply(formatar_label_grafico)
 
-    chart = (
+    bars = (
         alt.Chart(base)
         .mark_bar(size=48, cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#334155")
         .encode(
@@ -3051,8 +3072,19 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
                 alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
             ]
         )
-        .properties(height=285)
     )
+
+    labels = (
+        alt.Chart(base)
+        .mark_text(dy=-10, color="#cbd5e1", fontSize=11, fontWeight="bold")
+        .encode(
+            x=alt.X("Mês do atraso:N", sort=base["Mês do atraso"].tolist()),
+            y=alt.Y("Saldo em Atraso:Q"),
+            text="Label:N"
+        )
+    )
+
+    chart = (bars + labels).properties(height=285)
 
     st.altair_chart(chart, use_container_width=True)
 
@@ -3067,8 +3099,9 @@ def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
     base["Fornecedor Curto"] = base["Fornecedor"].astype(str).apply(
         lambda x: x if len(x) <= 34 else x[:34] + "..."
     )
+    base["Label"] = base["Saldo em Atraso"].apply(formatar_label_grafico)
 
-    chart = (
+    bars = (
         alt.Chart(base)
         .mark_bar(color="#334155", cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
         .encode(
@@ -3091,8 +3124,19 @@ def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
                 alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
             ]
         )
-        .properties(height=260)
     )
+
+    labels = (
+        alt.Chart(base)
+        .mark_text(dx=6, align="left", baseline="middle", color="#cbd5e1", fontSize=10, fontWeight="bold")
+        .encode(
+            y=alt.Y("Fornecedor Curto:N", sort=None),
+            x=alt.X("Saldo em Atraso:Q"),
+            text="Label:N"
+        )
+    )
+
+    chart = (bars + labels).properties(height=260)
 
     st.altair_chart(chart, use_container_width=True)
 
@@ -3137,6 +3181,10 @@ def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
         )
         return
 
+    total = base_abc["Saldo em Atraso"].sum()
+    base_abc["Percentual"] = (base_abc["Saldo em Atraso"] / total) * 100
+    base_abc["LabelPct"] = base_abc["Percentual"].apply(lambda x: f"{x:.1f}%".replace('.', ','))
+
     domain = ["A", "B", "C"]
     colors = ["#1f2937", "#475569", "#94a3b8"]
 
@@ -3157,12 +3205,23 @@ def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
                 alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
                 alt.Tooltip("Pré-nota em Atraso:Q", title="Pré-nota", format=",.2f"),
                 alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
+                alt.Tooltip("Percentual:Q", title="%", format=".1f")
             ]
         )
-        .properties(height=285)
     )
 
-    st.altair_chart(arc, use_container_width=True)
+    labels = (
+        alt.Chart(base_abc)
+        .mark_text(radius=112, fontSize=12, fontWeight="bold", color="#cbd5e1")
+        .encode(
+            theta=alt.Theta("Saldo em Atraso:Q"),
+            text="LabelPct:N"
+        )
+    )
+
+    chart = (arc + labels).properties(height=285)
+
+    st.altair_chart(chart, use_container_width=True)
 
 
 def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
@@ -3172,8 +3231,9 @@ def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
         return
 
     base = base.sort_values("Saldo em Atraso", ascending=False)
+    base["Label"] = base["Saldo em Atraso"].apply(formatar_label_grafico)
 
-    chart = (
+    bars = (
         alt.Chart(base)
         .mark_bar(color="#334155", cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
@@ -3196,8 +3256,19 @@ def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
                 alt.Tooltip("Não Faturado em Atraso:Q", title="Não faturado", format=",.2f"),
             ]
         )
-        .properties(height=270)
     )
+
+    labels = (
+        alt.Chart(base)
+        .mark_text(dy=-8, color="#cbd5e1", fontSize=10, fontWeight="bold")
+        .encode(
+            x=alt.X("Departamento:N", sort="-y"),
+            y=alt.Y("Saldo em Atraso:Q"),
+            text="Label:N"
+        )
+    )
+
+    chart = (bars + labels).properties(height=270)
 
     st.altair_chart(chart, use_container_width=True)
 
