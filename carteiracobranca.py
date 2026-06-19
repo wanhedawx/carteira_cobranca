@@ -207,7 +207,7 @@ st.markdown("""
     }
 
     .analise-empty-curva {
-        border: 1px solid var(--dash-grid);
+        border: 1px solid rgba(148,163,184,.16);
         background: rgba(148,163,184,.06);
         border-radius: 12px;
         padding: 16px 16px;
@@ -3098,13 +3098,13 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         curva_html = f"""
             <div class="donut-wrap">
-                <div class="donut" style="background: conic-gradient(var(--dash-bar-b) 0 {a_end:.2f}%, var(--dash-bar-a) {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
+                <div class="donut" style="background: conic-gradient(#e2e8f0 0 {a_end:.2f}%, #64748b {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
                     <div class="donut-hole"></div>
                 </div>
 
                 <div class="legenda-curva legenda-curva-com-percentual">
-                    <span><i style="background:var(--dash-bar-b)"></i>A <b>{pct_a_txt}%</b></span>
-                    <span><i style="background:var(--dash-bar-a)"></i>B <b>{pct_b_txt}%</b></span>
+                    <span><i style="background:#e2e8f0"></i>A <b>{pct_a_txt}%</b></span>
+                    <span><i style="background:#64748b"></i>B <b>{pct_b_txt}%</b></span>
                     <span><i style="background:#94a3b8"></i>C <b>{pct_c_txt}%</b></span>
                 </div>
             </div>
@@ -3201,14 +3201,19 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             grid-template-columns: 1.12fr .90fr 1.55fr;
             gap: 24px;
             align-items: start;
-            margin: 0 0 24px 0;
-            background: var(--dash-panel-bg);
-            color: var(--dash-text);
-            border: 1px solid var(--dash-panel-border);
+            margin: 0 0 18px 0;
+            background: #111827 !important;
+            color: #f8fafc !important;
+            border: 1px solid rgba(148,163,184,.22);
             border-radius: 16px;
             padding: 18px 20px 30px;
             box-shadow: 0 4px 16px var(--dash-shadow);
         }}
+
+        .dash4 * {
+            box-sizing: border-box;
+        }
+
         .dash-card {{
             background: transparent;
             min-height: 300px;
@@ -3218,7 +3223,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             font-size: 20px;
             line-height: 1.15;
             margin: 0 0 14px 0;
-            color: var(--dash-text);
+            color: #f8fafc;
             font-weight: 800;
             letter-spacing: -0.02em;
         }}
@@ -3235,7 +3240,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--dash-muted);
+            color: #cbd5e1;
             font-size: 13px;
             text-align: center;
             padding: 14px;
@@ -3252,7 +3257,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             gap: 8px;
             padding: 18px 8px 44px 32px;
             border-bottom: 1px solid rgba(148,163,184,.35);
-            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, var(--dash-grid) 39px);
+            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.16) 39px);
         }}
         .mes-item {{
             height: 100%;
@@ -3265,7 +3270,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         }}
         .barra-mes {{
             width: 30px;
-            background: linear-gradient(180deg, var(--dash-bar-a), var(--dash-bar-b));
+            background: linear-gradient(180deg, #64748b, #e2e8f0);
             border-radius: 5px 5px 0 0;
             box-shadow: 0 2px 6px rgba(15,23,42,.20);
         }}
@@ -3273,8 +3278,8 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             position: absolute;
             transform: translateY(-100%);
             margin-bottom: 7px;
-            color: var(--dash-label-text);
-            background: var(--dash-label-bg);
+            color: #0f172a;
+            background: rgba(248,250,252,.96);
             border-radius: 5px;
             padding: 2px 5px;
             font-size: 11px;
@@ -3287,7 +3292,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             position: absolute;
             bottom: -34px;
             font-size: 10px;
-            color: var(--dash-muted);
+            color: #cbd5e1;
             transform: rotate(-35deg);
             white-space: nowrap;
             font-weight: 650;
@@ -3311,7 +3316,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         .donut-hole {{
             position: absolute;
             inset: 50px;
-            background: var(--dash-hole);
+            background: #111827;
             border-radius: 50%;
         }}
         .legenda-curva {{
@@ -3320,7 +3325,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             gap: 18px;
             margin-top: 46px;
             font-size: 13px;
-            color: var(--dash-muted);
+            color: #cbd5e1;
             flex-wrap: wrap;
         }}
 
@@ -3331,7 +3336,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .legenda-curva-com-percentual b {{
             margin-left: 3px;
-            color: var(--dash-label-text);
+            color: #0f172a;
         }}
         .legenda-curva span {{
             display: inline-flex;
@@ -3381,8 +3386,8 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             width: 17px;
             height: 17px;
             border-radius: 50%;
-            background: var(--dash-rank-bg);
-            color: var(--dash-rank-text);
+            background: #334155;
+            color: #f8fafc;
             font-size: 10px;
             font-weight: 900;
             display: inline-flex;
@@ -3393,7 +3398,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-name {{
             font-size: 10px;
-            color: var(--dash-muted);
+            color: #cbd5e1;
             font-weight: 800;
             white-space: nowrap;
             overflow: hidden;
@@ -3403,7 +3408,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-value {{
             font-size: 10px;
-            color: var(--dash-text);
+            color: #f8fafc;
             font-weight: 900;
             white-space: nowrap;
             flex: 0 0 auto;
@@ -3411,7 +3416,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-track {{
             height: 11px;
-            background: var(--dash-track);
+            background: rgba(148,163,184,.24);
             border-radius: 999px;
             overflow: hidden;
             margin-left: 24px;
@@ -3419,7 +3424,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .forn-fill {{
             height: 100%;
-            background: linear-gradient(90deg, var(--dash-bar-a), var(--dash-bar-b));
+            background: linear-gradient(90deg, #64748b, #e2e8f0);
             border-radius: 999px;
         }}
 
@@ -3446,7 +3451,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
-    components.html(html, height=430, scrolling=False)
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
