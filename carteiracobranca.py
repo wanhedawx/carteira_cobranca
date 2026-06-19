@@ -427,16 +427,33 @@ def identificar_analista(departamento):
 def normalizar_curva_abc(valor):
     txt = norm(valor)
 
-    if not txt or txt in ["NAN", "NONE", "-", "SEM CURVA", "SEM CLASSIFICACAO"]:
+    if not txt or txt in ["NAN", "NONE", "-", "SEM CURVA", "SEM CLASSIFICACAO", "SEM CLASSIFICACAO ABC"]:
         return ""
 
-    if txt == "A" or txt.startswith("A ") or "CURVA A" in txt:
+    # Aceita: A, A+, A1, CURVA A, CLASSE A, ABC A etc.
+    partes = txt.split()
+
+    if txt == "1":
+        return "A"
+    if txt == "2":
+        return "B"
+    if txt == "3":
+        return "C"
+
+    if txt == "A" or txt.startswith("A") or " CURVA A" in f" {txt}" or " CLASSE A" in f" {txt}" or " ABC A" in f" {txt}":
         return "A"
 
-    if txt == "B" or txt.startswith("B ") or "CURVA B" in txt:
+    if txt == "B" or txt.startswith("B") or " CURVA B" in f" {txt}" or " CLASSE B" in f" {txt}" or " ABC B" in f" {txt}":
         return "B"
 
-    if txt == "C" or txt.startswith("C ") or "CURVA C" in txt:
+    if txt == "C" or txt.startswith("C") or " CURVA C" in f" {txt}" or " CLASSE C" in f" {txt}" or " ABC C" in f" {txt}":
+        return "C"
+
+    if "A" in partes:
+        return "A"
+    if "B" in partes:
+        return "B"
+    if "C" in partes:
         return "C"
 
     return txt
@@ -1392,8 +1409,10 @@ def encontrar_colunas_itens(df):
     ])
 
     col_curva_abc = encontrar_coluna_fixa(df, [
-        "Curva ABC", "Curva CIA", "CURVA CIA", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
-        "Curva Produto", "Curva Item", "Curva Mercadoria", "Curva CIA Produto", "Curva CIA Item"
+        "Curva ABC", "CURVA ABC", "Curva CIA", "CURVA CIA", "Curva_CIA", "CURVA_CIA",
+        "Curva Cia", "CURVA Cia", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Classificação CIA", "Classificacao CIA", "Curva Produto", "Curva Item", "Curva Mercadoria",
+        "Curva CIA Produto", "Curva CIA Item", "Curva Cia Produto", "Curva Cia Item"
     ])
 
     mapa = {norm(c): c for c in df.columns}
@@ -1549,8 +1568,10 @@ def mapear_colunas_fixas(df):
     ])
 
     col_curva_abc = encontrar_coluna_fixa(df, [
-        "Curva ABC", "Curva CIA", "CURVA CIA", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
-        "Curva Produto", "Curva Item", "Curva Mercadoria", "Curva CIA Produto", "Curva CIA Item"
+        "Curva ABC", "CURVA ABC", "Curva CIA", "CURVA CIA", "Curva_CIA", "CURVA_CIA",
+        "Curva Cia", "CURVA Cia", "Curva", "ABC", "Classificação ABC", "Classificacao ABC",
+        "Classificação CIA", "Classificacao CIA", "Curva Produto", "Curva Item", "Curva Mercadoria",
+        "Curva CIA Produto", "Curva CIA Item", "Curva Cia Produto", "Curva Cia Item"
     ])
 
     # Valores R$/CMV: procura sem confundir com colunas QTD.
@@ -3002,50 +3023,33 @@ def tela_analise_atrasos(analista=None):
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
+    # Aqui é SOMENTE o Saldo em Atraso, sem empilhar Pré-nota e Não Faturado.
     base = df_meses.copy()
-    cols = [c for c in ["Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"] if c in base.columns]
 
-    if not cols or "Mês do atraso" not in base.columns:
+    if "Mês do atraso" not in base.columns or "Saldo em Atraso" not in base.columns:
         return
 
-    melted = base[["Mês do atraso"] + cols].melt(
-        id_vars="Mês do atraso",
-        value_vars=cols,
-        var_name="Tipo",
-        value_name="Valor"
-    )
-
-    melted["Valor"] = pd.to_numeric(melted["Valor"], errors="coerce").fillna(0)
-
-    color_scale = alt.Scale(
-        domain=["Saldo em Atraso", "Pré-nota em Atraso", "Não Faturado em Atraso"],
-        range=["#334155", "#475569", "#64748b"]
-    )
+    base["Saldo em Atraso"] = pd.to_numeric(base["Saldo em Atraso"], errors="coerce").fillna(0)
 
     chart = (
-        alt.Chart(melted)
-        .mark_bar(size=48, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        alt.Chart(base)
+        .mark_bar(size=48, cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#334155")
         .encode(
             x=alt.X(
                 "Mês do atraso:N",
                 title=None,
+                sort=base["Mês do atraso"].tolist(),
                 axis=alt.Axis(labelAngle=-20, labelFontSize=11, labelPadding=8)
             ),
             y=alt.Y(
-                "sum(Valor):Q",
+                "Saldo em Atraso:Q",
                 title=None,
                 axis=alt.Axis(labelFontSize=11, grid=True)
             ),
-            color=alt.Color(
-                "Tipo:N",
-                title=None,
-                scale=color_scale,
-                legend=alt.Legend(orient="bottom", direction="horizontal", labelFontSize=11)
-            ),
             tooltip=[
                 alt.Tooltip("Mês do atraso:N", title="Mês"),
-                alt.Tooltip("Tipo:N", title="Tipo"),
-                alt.Tooltip("sum(Valor):Q", title="Valor", format=",.2f")
+                alt.Tooltip("Pedidos:Q", title="Pedidos"),
+                alt.Tooltip("Saldo em Atraso:Q", title="Saldo", format=",.2f"),
             ]
         )
         .properties(height=285)
