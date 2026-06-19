@@ -3116,10 +3116,11 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
     fornecedores = []
     if df_fornecedor is not None and not df_fornecedor.empty:
-        for _, r in df_fornecedor.iterrows():
+        for i, (_, r) in enumerate(df_fornecedor.iterrows(), start=1):
             saldo = num(r.get("Saldo em Atraso", 0))
             fornecedores.append({
-                "nome": truncar_texto(r.get("Fornecedor", ""), 23),
+                "rank": i,
+                "nome": truncar_texto(r.get("Fornecedor", ""), 34),
                 "saldo": saldo,
                 "label": label(saldo),
             })
@@ -3127,12 +3128,19 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     max_forn = max([x["saldo"] for x in fornecedores], default=1)
     fornecedores_html = ""
     for f in fornecedores:
-        w = max(3, min(100, (f["saldo"] / max_forn) * 100))
+        w = max(6, min(100, (f["saldo"] / max_forn) * 100))
         fornecedores_html += f"""
-            <div class="h-row">
-                <div class="h-name">{escape(f["nome"])}</div>
-                <div class="h-track"><div class="h-fill" style="width:{w:.1f}%"></div></div>
-                <div class="h-value">{escape(f["label"])}</div>
+            <div class="forn-item">
+                <div class="forn-top">
+                    <div class="forn-left">
+                        <span class="forn-rank">{f['rank']}</span>
+                        <span class="forn-name">{escape(f['nome'])}</span>
+                    </div>
+                    <span class="forn-value">{escape(f['label'])}</span>
+                </div>
+                <div class="forn-track">
+                    <div class="forn-fill" style="width:{w:.1f}%"></div>
+                </div>
             </div>
         """
     if not fornecedores_html:
@@ -3420,7 +3428,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
-    components.html(html, height=360, scrolling=False)
+    components.html(html, height=380, scrolling=False)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
