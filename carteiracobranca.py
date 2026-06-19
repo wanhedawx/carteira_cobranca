@@ -3091,18 +3091,21 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         pct_c = curva_vals["C"] / total_curva * 100
         a_end = pct_a
         b_end = pct_a + pct_b
+
+        pct_a_txt = str(round(pct_a, 1)).replace(".", ",")
+        pct_b_txt = str(round(pct_b, 1)).replace(".", ",")
+        pct_c_txt = str(round(pct_c, 1)).replace(".", ",")
+
         curva_html = f"""
             <div class="donut-wrap">
                 <div class="donut" style="background: conic-gradient(#172033 0 {a_end:.2f}%, #475569 {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
                     <div class="donut-hole"></div>
-                    <div class="pct pct-a">{str(round(pct_a, 1)).replace(".", ",")}%</div>
-                    <div class="pct pct-b">{str(round(pct_b, 1)).replace(".", ",")}%</div>
-                    <div class="pct pct-c">{str(round(pct_c, 1)).replace(".", ",")}%</div>
                 </div>
-                <div class="legenda-curva">
-                    <span><i style="background:#172033"></i>A</span>
-                    <span><i style="background:#475569"></i>B</span>
-                    <span><i style="background:#94a3b8"></i>C</span>
+
+                <div class="legenda-curva legenda-curva-com-percentual">
+                    <span><i style="background:#172033"></i>A <b>{pct_a_txt}%</b></span>
+                    <span><i style="background:#475569"></i>B <b>{pct_b_txt}%</b></span>
+                    <span><i style="background:#94a3b8"></i>C <b>{pct_c_txt}%</b></span>
                 </div>
             </div>
         """
@@ -3270,7 +3273,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             flex-direction: column;
             align-items: center;
             justify-content: flex-start;
-            padding-top: 10px;
+            padding-top: 8px;
             overflow: visible;
         }}
         .donut {{
@@ -3286,27 +3289,24 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             background: var(--background-color, #fff);
             border-radius: 50%;
         }}
-        .pct {{
-            position: absolute;
-            color: #0f172a;
-            background: rgba(255,255,255,.96);
-            border-radius: 5px;
-            padding: 2px 5px;
-            font-size: 11px;
-            font-weight: 900;
-            white-space: nowrap;
-            box-shadow: 0 1px 3px rgba(15,23,42,.10);
-        }}
-        .pct-a {{ left: -46px; top: 114px; }}
-        .pct-b {{ right: -54px; top: 98px; }}
-        .pct-c {{ right: -48px; top: 32px; }}
         .legenda-curva {{
             display: flex;
             justify-content: center;
-            gap: 16px;
-            margin-top: 22px;
+            gap: 14px;
+            margin-top: 30px;
             font-size: 11px;
             color: #334155;
+            flex-wrap: wrap;
+        }}
+
+        .legenda-curva-com-percentual {{
+            width: 100%;
+            max-width: 260px;
+        }}
+
+        .legenda-curva-com-percentual b {{
+            margin-left: 3px;
+            color: #0f172a;
         }}
         .legenda-curva span {{
             display: inline-flex;
