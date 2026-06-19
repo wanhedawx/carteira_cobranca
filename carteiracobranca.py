@@ -3002,31 +3002,27 @@ def tela_analise_atrasos(analista=None):
 
     df_meses = resumo_meses_atraso(df_base)
     df_curva = resumo_curva_abc(df_base)
+    df_fornecedor = resumo_agrupado(df_base, "fornecedor", "Fornecedor").head(10)
+    df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
 
-    col_meses, col_curva = st.columns([1.7, 1])
+    g1, g2, g3, g4 = st.columns([1.15, 0.95, 1.15, 1.15], gap="small")
 
-    with col_meses:
+    with g1:
         st.subheader("Saldo por mês de atraso")
         if not df_meses.empty:
             exibir_grafico_meses_empilhado(df_meses)
 
-    with col_curva:
+    with g2:
         st.subheader("Curva ABC em atraso")
         exibir_grafico_curva_rosca(df_curva)
 
-    st.divider()
-
-    col_fornecedor, col_departamento = st.columns([1, 1.2])
-
-    with col_fornecedor:
+    with g3:
         st.subheader("Top 10 fornecedores em atraso")
-        df_fornecedor = resumo_agrupado(df_base, "fornecedor", "Fornecedor").head(10)
         if not df_fornecedor.empty:
             exibir_grafico_fornecedores(df_fornecedor)
 
-    with col_departamento:
+    with g4:
         st.subheader("Departamentos em atraso")
-        df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
         if not df_departamento.empty:
             exibir_grafico_departamentos_vertical(df_departamento)
 
@@ -3058,13 +3054,13 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
 
     bars = (
         alt.Chart(base)
-        .mark_bar(size=34, cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#334155")
+        .mark_bar(size=24, cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#334155")
         .encode(
             x=alt.X(
                 "Mês do atraso:N",
                 title=None,
                 sort=ordem_meses,
-                axis=alt.Axis(labelAngle=0, labelFontSize=10, labelPadding=10)
+                axis=alt.Axis(labelAngle=-25, labelFontSize=9, labelPadding=8)
             ),
             y=alt.Y(
                 "Saldo em Atraso:Q",
@@ -3081,7 +3077,14 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
 
     labels = (
         alt.Chart(base)
-        .mark_text(dy=-8, color="#94a3b8", fontSize=10, fontWeight="bold")
+        .mark_text(
+            dy=-12,
+            color="#f8fafc",
+            stroke="#111827",
+            strokeWidth=2,
+            fontSize=11,
+            fontWeight="bold"
+        )
         .encode(
             x=alt.X("Mês do atraso:N", sort=ordem_meses),
             y=alt.Y("Saldo em Atraso:Q"),
@@ -3091,11 +3094,11 @@ def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
 
     chart = (
         (bars + labels)
-        .properties(width=620, height=220)
+        .properties(width="container", height=210)
         .configure_view(strokeOpacity=0)
     )
 
-    st.altair_chart(chart, use_container_width=False)
+    st.altair_chart(chart, use_container_width=True)
 
 
 def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
@@ -3145,7 +3148,7 @@ def exibir_grafico_fornecedores(df_fornecedor: pd.DataFrame):
         )
     )
 
-    chart = (bars + labels).properties(height=260)
+    chart = (bars + labels).properties(width="container", height=210).configure_view(strokeOpacity=0)
 
     st.altair_chart(chart, use_container_width=True)
 
@@ -3199,7 +3202,7 @@ def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
 
     arc = (
         alt.Chart(base_abc)
-        .mark_arc(innerRadius=48, outerRadius=88)
+        .mark_arc(innerRadius=42, outerRadius=72)
         .encode(
             theta=alt.Theta("Saldo em Atraso:Q"),
             color=alt.Color(
@@ -3221,16 +3224,16 @@ def exibir_grafico_curva_rosca(df_curva: pd.DataFrame):
 
     labels = (
         alt.Chart(base_abc)
-        .mark_text(radius=112, fontSize=12, fontWeight="bold", color="#cbd5e1")
+        .mark_text(radius=95, fontSize=10, fontWeight="bold", color="#cbd5e1")
         .encode(
             theta=alt.Theta("Saldo em Atraso:Q"),
             text="LabelPct:N"
         )
     )
 
-    chart = (arc + labels).properties(height=285)
+    chart = (arc + labels).properties(width=170, height=190).configure_view(strokeOpacity=0)
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, use_container_width=False)
 
 
 def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
@@ -3250,7 +3253,7 @@ def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
                 "Departamento:N",
                 sort="-y",
                 title=None,
-                axis=alt.Axis(labelAngle=-25, labelFontSize=10)
+                axis=alt.Axis(labelAngle=-40, labelFontSize=9)
             ),
             y=alt.Y(
                 "Saldo em Atraso:Q",
@@ -3277,7 +3280,7 @@ def exibir_grafico_departamentos_vertical(df_departamento: pd.DataFrame):
         )
     )
 
-    chart = (bars + labels).properties(height=270)
+    chart = (bars + labels).properties(width="container", height=210).configure_view(strokeOpacity=0)
 
     st.altair_chart(chart, use_container_width=True)
 
