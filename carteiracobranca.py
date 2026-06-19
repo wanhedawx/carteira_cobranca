@@ -3174,8 +3174,9 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     <style>
         .dash4 {{
             width: 100%;
+            font-family: Inter, "Segoe UI", Arial, sans-serif;
             display: grid;
-            grid-template-columns: 1.08fr .86fr 1.18fr 1.06fr;
+            grid-template-columns: 1.05fr .78fr 1.32fr 1.05fr;
             gap: 18px;
             align-items: start;
             margin: 2px 0 24px 0;
@@ -3320,39 +3321,82 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         }}
         .forn-chart {{
             height: 228px;
-            display: grid;
-            grid-template-columns: 96px 1fr 52px;
-            column-gap: 7px;
-            row-gap: 4px;
-            align-items: center;
-            padding-top: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            overflow: hidden;
+            padding: 2px 4px 0 2px;
         }}
-        .h-name {{
+
+        .forn-item {{
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }}
+
+        .forn-top {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-width: 0;
+        }}
+
+        .forn-left {{
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            flex: 1;
+        }}
+
+        .forn-rank {{
+            width: 17px;
+            height: 17px;
+            border-radius: 50%;
+            background: #e2e8f0;
+            color: #172033;
             font-size: 10px;
-            color: #475569;
-            text-align: right;
+            font-weight: 900;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 17px;
+        }}
+
+        .forn-name {{
+            font-size: 10px;
+            color: #334155;
+            font-weight: 800;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            font-weight: 800;
+            min-width: 0;
         }}
-        .h-track {{
-            height: 13px;
-            background: rgba(226,232,240,.55);
-            border-radius: 999px;
-            overflow: hidden;
-        }}
-        .h-fill {{
-            height: 100%;
-            background: linear-gradient(90deg, #334155, #172033);
-            border-radius: 999px;
-        }}
-        .h-value {{
+
+        .forn-value {{
             font-size: 10px;
-            color: #334155;
+            color: #0f172a;
             font-weight: 900;
             white-space: nowrap;
+            flex: 0 0 auto;
         }}
+
+        .forn-track {{
+            height: 11px;
+            background: rgba(226,232,240,.70);
+            border-radius: 999px;
+            overflow: hidden;
+            margin-left: 24px;
+        }}
+
+        .forn-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #475569, #172033);
+            border-radius: 999px;
+        }}
+
         .deps {{
             height: 228px;
             display: flex;
@@ -3428,7 +3472,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
-    components.html(html, height=380, scrolling=False)
+    components.html(html, height=390, scrolling=False)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
