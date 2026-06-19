@@ -3268,40 +3268,40 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             font-weight: 650;
         }}
         .donut-wrap {{
-            height: 245px;
+            height: 300px;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: flex-start;
-            padding-top: 8px;
+            padding-top: 10px;
             overflow: visible;
         }}
         .donut {{
-            width: 155px;
-            height: 155px;
+            width: 185px;
+            height: 185px;
             border-radius: 50%;
             position: relative;
-            margin-top: 5px;
+            margin-top: 8px;
         }}
         .donut-hole {{
             position: absolute;
-            inset: 42px;
+            inset: 50px;
             background: var(--background-color, #fff);
             border-radius: 50%;
         }}
         .legenda-curva {{
             display: flex;
             justify-content: center;
-            gap: 14px;
-            margin-top: 30px;
-            font-size: 11px;
+            gap: 18px;
+            margin-top: 46px;
+            font-size: 13px;
             color: #334155;
             flex-wrap: wrap;
         }}
 
         .legenda-curva-com-percentual {{
             width: 100%;
-            max-width: 260px;
+            max-width: 340px;
         }}
 
         .legenda-curva-com-percentual b {{
@@ -3315,8 +3315,8 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             font-weight: 800;
         }}
         .legenda-curva i {{
-            width: 11px;
-            height: 11px;
+            width: 13px;
+            height: 13px;
             border-radius: 50%;
             display: inline-block;
         }}
