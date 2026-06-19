@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text, bindparam
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ import io
 import re
 import json
 import secrets as py_secrets
+from html import escape
 
 # =========================
 # CONFIGURAÇÕES
@@ -3013,26 +3015,12 @@ def tela_analise_atrasos(analista=None):
     df_fornecedor = resumo_agrupado(df_base, "fornecedor", "Fornecedor").head(10)
     df_departamento = resumo_agrupado(df_base, "departamento", "Departamento")
 
-    g1, g2, g3, g4 = st.columns([1.2, 0.85, 1.2, 1.15], gap="small")
-
-    with g1:
-        st.subheader("Saldo por mês de atraso")
-        if not df_meses.empty:
-            exibir_grafico_meses_empilhado(df_meses)
-
-    with g2:
-        st.subheader("Curva ABC em atraso")
-        exibir_grafico_curva_rosca(df_curva)
-
-    with g3:
-        st.subheader("Top 10 fornecedores em atraso")
-        if not df_fornecedor.empty:
-            exibir_grafico_fornecedores(df_fornecedor)
-
-    with g4:
-        st.subheader("Departamentos em atraso")
-        if not df_departamento.empty:
-            exibir_grafico_departamentos_vertical(df_departamento)
+    renderizar_dashboard_4_graficos(
+        df_meses=df_meses,
+        df_curva=df_curva,
+        df_fornecedor=df_fornecedor,
+        df_departamento=df_departamento,
+    )
 
     st.subheader("Todos os departamentos")
     exibir_tabela_resumo(df_departamento, altura=300)
@@ -3043,6 +3031,396 @@ def tela_analise_atrasos(analista=None):
         df_analista = resumo_agrupado(df_base, "analista", "Analista")
         exibir_tabela_resumo(df_analista, altura=340)
 
+
+
+
+def truncar_texto(valor, tamanho=24):
+    txt = str(valor or "").strip()
+    return txt if len(txt) <= tamanho else txt[:max(0, tamanho - 3)] + "..."
+
+
+def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_departamento):
+    def num(v):
+        try:
+            return float(converter_numero(v))
+        except Exception:
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+    def label(v):
+        return formatar_label_grafico(v)
+
+    meses = []
+    if df_meses is not None and not df_meses.empty and "Mês do atraso" in df_meses.columns:
+        for _, r in df_meses.iterrows():
+            saldo = num(r.get("Saldo em Atraso", 0))
+            if saldo > 0:
+                meses.append({
+                    "nome": str(r.get("Mês do atraso", "")),
+                    "saldo": saldo,
+                    "label": label(saldo),
+                })
+
+    max_mes = max([m["saldo"] for m in meses], default=1)
+    meses_html = ""
+    for m in meses:
+        h = max(3, min(100, (m["saldo"] / max_mes) * 100))
+        meses_html += f"""
+            <div class="mes-item">
+                <div class="rotulo-barra" style="bottom:{h:.1f}%">{escape(m["label"])}</div>
+                <div class="barra-mes" style="height:{h:.1f}%"></div>
+                <div class="nome-mes">{escape(m["nome"])}</div>
+            </div>
+        """
+    if not meses_html:
+        meses_html = '<div class="empty-chart">Sem saldo por mês</div>'
+
+    curva_vals = {"A": 0.0, "B": 0.0, "C": 0.0}
+    if df_curva is not None and not df_curva.empty and "Curva ABC" in df_curva.columns:
+        for _, r in df_curva.iterrows():
+            c = normalizar_curva_abc(r.get("Curva ABC", ""))
+            if c in curva_vals:
+                curva_vals[c] += num(r.get("Saldo em Atraso", 0))
+
+    total_curva = sum(curva_vals.values())
+    if total_curva > 0:
+        pct_a = curva_vals["A"] / total_curva * 100
+        pct_b = curva_vals["B"] / total_curva * 100
+        pct_c = curva_vals["C"] / total_curva * 100
+        a_end = pct_a
+        b_end = pct_a + pct_b
+        curva_html = f"""
+            <div class="donut-wrap">
+                <div class="donut" style="background: conic-gradient(#172033 0 {a_end:.2f}%, #475569 {a_end:.2f}% {b_end:.2f}%, #94a3b8 {b_end:.2f}% 100%);">
+                    <div class="donut-hole"></div>
+                    <div class="pct pct-a">{str(round(pct_a, 1)).replace(".", ",")}%</div>
+                    <div class="pct pct-b">{str(round(pct_b, 1)).replace(".", ",")}%</div>
+                    <div class="pct pct-c">{str(round(pct_c, 1)).replace(".", ",")}%</div>
+                </div>
+                <div class="legenda-curva">
+                    <span><i style="background:#172033"></i>A</span>
+                    <span><i style="background:#475569"></i>B</span>
+                    <span><i style="background:#94a3b8"></i>C</span>
+                </div>
+            </div>
+        """
+    else:
+        curva_html = """
+            <div class="empty-curve">
+                <b>Sem Curva ABC</b>
+                <span>A base não trouxe A/B/C para montar a rosca.</span>
+            </div>
+        """
+
+    fornecedores = []
+    if df_fornecedor is not None and not df_fornecedor.empty:
+        for _, r in df_fornecedor.iterrows():
+            saldo = num(r.get("Saldo em Atraso", 0))
+            fornecedores.append({
+                "nome": truncar_texto(r.get("Fornecedor", ""), 23),
+                "saldo": saldo,
+                "label": label(saldo),
+            })
+
+    max_forn = max([x["saldo"] for x in fornecedores], default=1)
+    fornecedores_html = ""
+    for f in fornecedores:
+        w = max(3, min(100, (f["saldo"] / max_forn) * 100))
+        fornecedores_html += f"""
+            <div class="h-row">
+                <div class="h-name">{escape(f["nome"])}</div>
+                <div class="h-track"><div class="h-fill" style="width:{w:.1f}%"></div></div>
+                <div class="h-value">{escape(f["label"])}</div>
+            </div>
+        """
+    if not fornecedores_html:
+        fornecedores_html = '<div class="empty-chart">Sem fornecedores</div>'
+
+    deps = []
+    if df_departamento is not None and not df_departamento.empty:
+        for _, r in df_departamento.head(8).iterrows():
+            saldo = num(r.get("Saldo em Atraso", 0))
+            deps.append({
+                "nome": truncar_texto(r.get("Departamento", ""), 14),
+                "saldo": saldo,
+                "label": label(saldo),
+            })
+
+    max_dep = max([x["saldo"] for x in deps], default=1)
+    deps_html = ""
+    for d in deps:
+        h = max(3, min(100, (d["saldo"] / max_dep) * 100))
+        deps_html += f"""
+            <div class="dep-item">
+                <div class="dep-label" style="bottom:{h:.1f}%">{escape(d["label"])}</div>
+                <div class="dep-bar" style="height:{h:.1f}%"></div>
+                <div class="dep-name">{escape(d["nome"])}</div>
+            </div>
+        """
+    if not deps_html:
+        deps_html = '<div class="empty-chart">Sem departamentos</div>'
+
+    html = f"""
+    <style>
+        .dash4 {{
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1.08fr .86fr 1.18fr 1.06fr;
+            gap: 18px;
+            align-items: start;
+            margin: 2px 0 24px 0;
+        }}
+        .dash-card {{
+            background: transparent;
+            min-height: 285px;
+            overflow: visible;
+        }}
+        .dash-card h3 {{
+            font-size: 20px;
+            line-height: 1.15;
+            margin: 0 0 14px 0;
+            color: var(--text-color, #0f172a);
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }}
+        .chart-area {{
+            height: 228px;
+            position: relative;
+            overflow: visible;
+        }}
+        .empty-chart,
+        .empty-curve {{
+            height: 220px;
+            border: 1px solid rgba(148,163,184,.25);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #64748b;
+            font-size: 13px;
+            text-align: center;
+            padding: 14px;
+        }}
+        .empty-curve {{
+            flex-direction: column;
+            gap: 6px;
+        }}
+        .meses {{
+            height: 228px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-around;
+            gap: 8px;
+            padding: 18px 8px 44px 32px;
+            border-bottom: 1px solid rgba(148,163,184,.35);
+            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.20) 39px);
+        }}
+        .mes-item {{
+            height: 100%;
+            min-width: 34px;
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+        }}
+        .barra-mes {{
+            width: 30px;
+            background: linear-gradient(180deg, #334155, #172033);
+            border-radius: 5px 5px 0 0;
+            box-shadow: 0 2px 6px rgba(15,23,42,.20);
+        }}
+        .rotulo-barra {{
+            position: absolute;
+            transform: translateY(-100%);
+            margin-bottom: 7px;
+            color: #0f172a;
+            background: rgba(255,255,255,.96);
+            border-radius: 5px;
+            padding: 2px 5px;
+            font-size: 11px;
+            font-weight: 900;
+            white-space: nowrap;
+            z-index: 3;
+            box-shadow: 0 1px 3px rgba(15,23,42,.10);
+        }}
+        .nome-mes {{
+            position: absolute;
+            bottom: -34px;
+            font-size: 10px;
+            color: #475569;
+            transform: rotate(-35deg);
+            white-space: nowrap;
+            font-weight: 650;
+        }}
+        .donut-wrap {{
+            height: 228px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: visible;
+        }}
+        .donut {{
+            width: 155px;
+            height: 155px;
+            border-radius: 50%;
+            position: relative;
+            margin-top: 5px;
+        }}
+        .donut-hole {{
+            position: absolute;
+            inset: 39px;
+            background: var(--background-color, #fff);
+            border-radius: 50%;
+        }}
+        .pct {{
+            position: absolute;
+            color: #0f172a;
+            background: rgba(255,255,255,.96);
+            border-radius: 5px;
+            padding: 2px 5px;
+            font-size: 11px;
+            font-weight: 900;
+            white-space: nowrap;
+            box-shadow: 0 1px 3px rgba(15,23,42,.10);
+        }}
+        .pct-a {{ left: -40px; top: 104px; }}
+        .pct-b {{ right: -48px; top: 90px; }}
+        .pct-c {{ right: -42px; top: 28px; }}
+        .legenda-curva {{
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 14px;
+            font-size: 12px;
+            color: #334155;
+        }}
+        .legenda-curva span {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 800;
+        }}
+        .legenda-curva i {{
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            display: inline-block;
+        }}
+        .forn-chart {{
+            height: 228px;
+            display: grid;
+            grid-template-columns: 96px 1fr 52px;
+            column-gap: 7px;
+            row-gap: 4px;
+            align-items: center;
+            padding-top: 0;
+        }}
+        .h-name {{
+            font-size: 10px;
+            color: #475569;
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-weight: 800;
+        }}
+        .h-track {{
+            height: 13px;
+            background: rgba(226,232,240,.55);
+            border-radius: 999px;
+            overflow: hidden;
+        }}
+        .h-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #334155, #172033);
+            border-radius: 999px;
+        }}
+        .h-value {{
+            font-size: 10px;
+            color: #334155;
+            font-weight: 900;
+            white-space: nowrap;
+        }}
+        .deps {{
+            height: 228px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-around;
+            gap: 5px;
+            padding: 18px 2px 52px 24px;
+            border-bottom: 1px solid rgba(148,163,184,.35);
+            background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.20) 39px);
+        }}
+        .dep-item {{
+            height: 100%;
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            min-width: 24px;
+        }}
+        .dep-bar {{
+            width: 22px;
+            background: linear-gradient(180deg, #334155, #172033);
+            border-radius: 4px 4px 0 0;
+        }}
+        .dep-label {{
+            position: absolute;
+            transform: translateY(-100%);
+            margin-bottom: 6px;
+            color: #0f172a;
+            background: rgba(255,255,255,.96);
+            border-radius: 5px;
+            padding: 1px 4px;
+            font-size: 9px;
+            font-weight: 900;
+            white-space: nowrap;
+            z-index: 3;
+        }}
+        .dep-name {{
+            position: absolute;
+            bottom: -45px;
+            transform: rotate(-45deg);
+            font-size: 9px;
+            line-height: 1.05;
+            color: #475569;
+            width: 70px;
+            text-align: right;
+            font-weight: 700;
+        }}
+        @media (max-width: 1500px) {{
+            .dash4 {{
+                grid-template-columns: 1fr 1fr;
+            }}
+        }}
+    </style>
+
+    <div class="dash4">
+        <div class="dash-card">
+            <h3>Saldo por mês de atraso</h3>
+            <div class="chart-area meses">{meses_html}</div>
+        </div>
+        <div class="dash-card">
+            <h3>Curva ABC em atraso</h3>
+            {curva_html}
+        </div>
+        <div class="dash-card">
+            <h3>Top 10 fornecedores em atraso</h3>
+            <div class="chart-area forn-chart">{fornecedores_html}</div>
+        </div>
+        <div class="dash-card">
+            <h3>Departamentos em atraso</h3>
+            <div class="chart-area deps">{deps_html}</div>
+        </div>
+    </div>
+    """
+
+    components.html(html, height=330, scrolling=False)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
