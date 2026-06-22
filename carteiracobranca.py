@@ -331,14 +331,26 @@ def preparar_opcoes_mes(df):
     return ordem["_label"].tolist()
 
 
-def aplicar_filtro_mes_df(df, mes_selecionado):
-    if not mes_selecionado or mes_selecionado == "TODOS" or df.empty:
+def aplicar_filtro_mes_df(df, meses_selecionados):
+    if not meses_selecionados or df.empty:
+        return df
+
+    if isinstance(meses_selecionados, str):
+        meses_selecionados = [meses_selecionados]
+
+    meses_selecionados = [
+        str(x).strip()
+        for x in meses_selecionados
+        if str(x).strip()
+    ]
+
+    if not meses_selecionados:
         return df
 
     datas = serie_data_prev_entrega(df)
     labels = datas.apply(label_mes_ano)
 
-    return df[labels == mes_selecionado]
+    return df[labels.isin(meses_selecionados)]
 
 
 def norm(txt):
@@ -2415,16 +2427,24 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix="", filtro_mes=Fa
 
     with col_extra:
         if filtro_mes:
-            opcoes_mes = ["TODOS"] + preparar_opcoes_mes(df)
+            opcoes_mes = preparar_opcoes_mes(df)
+            key_mes = f"{key_prefix}_meses"
 
-            mes_selecionado = st.selectbox(
+            if key_mes in st.session_state:
+                st.session_state[key_mes] = [
+                    x for x in st.session_state.get(key_mes, [])
+                    if x in opcoes_mes
+                ]
+
+            meses_selecionados = st.multiselect(
                 "Mês",
                 opcoes_mes,
-                key=f"{key_prefix}_mes"
+                key=key_mes,
+                placeholder="Selecione um ou mais meses"
             )
 
-            if mes_selecionado != "TODOS":
-                df = aplicar_filtro_mes_df(df, mes_selecionado)
+            if meses_selecionados:
+                df = aplicar_filtro_mes_df(df, meses_selecionados)
         else:
             busca = st.text_input(
                 "Pesquisar pedido",
