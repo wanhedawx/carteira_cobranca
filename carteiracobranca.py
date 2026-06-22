@@ -2723,11 +2723,6 @@ def tela_limpeza_testes_admin():
     c1.metric("Pedidos afetados", resumo["pedidos"])
     c2.metric("Eventos de cobrança/teste", resumo["eventos"])
 
-    st.caption(
-        "Tipos removidos: COBRANCA, NECESSARIO_ACIONAR_COMPRADOR, "
-        "COMPRADOR_ACIONADO e EXCLUSAO_COBRANCA."
-    )
-
     confirmar = st.text_input(
         "Digite LIMPAR para confirmar",
         key="confirmar_limpeza_cobranca"
