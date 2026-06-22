@@ -3452,8 +3452,11 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
-    html = textwrap.dedent(html).strip()
-    st.markdown(html, unsafe_allow_html=True)
+    html = "\n".join(line.lstrip() for line in textwrap.dedent(html).splitlines()).strip()
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def exibir_grafico_meses_empilhado(df_meses: pd.DataFrame):
