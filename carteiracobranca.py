@@ -271,6 +271,76 @@ def sem_acento(txt):
     return normalize("NFKD", txt).encode("ASCII", "ignore").decode("ASCII")
 
 
+
+MESES_PT_ABREV = {
+    1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
+    7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
+}
+
+
+def serie_data_prev_entrega(df):
+    if df is None or df.empty:
+        return pd.Series([], dtype="datetime64[ns]")
+
+    if "dt_agendada_ordem" in df.columns:
+        datas = pd.to_datetime(df["dt_agendada_ordem"], errors="coerce")
+    elif "dt_agendada" in df.columns:
+        datas = pd.to_datetime(df["dt_agendada"], errors="coerce", dayfirst=True)
+    else:
+        datas = pd.Series(pd.NaT, index=df.index)
+
+    return datas
+
+
+def label_mes_ano(data):
+    if pd.isna(data):
+        return ""
+
+    data = pd.to_datetime(data, errors="coerce")
+
+    if pd.isna(data):
+        return ""
+
+    return f"{MESES_PT_ABREV.get(int(data.month), str(int(data.month)).zfill(2))}/{int(data.year)}"
+
+
+def preparar_opcoes_mes(df):
+    datas = serie_data_prev_entrega(df)
+
+    if datas.empty:
+        return []
+
+    base = pd.DataFrame({
+        "_data": datas
+    })
+
+    base = base.dropna(subset=["_data"])
+
+    if base.empty:
+        return []
+
+    base["_periodo"] = base["_data"].dt.to_period("M")
+    base["_label"] = base["_data"].apply(label_mes_ano)
+
+    ordem = (
+        base[["_periodo", "_label"]]
+        .drop_duplicates()
+        .sort_values("_periodo")
+    )
+
+    return ordem["_label"].tolist()
+
+
+def aplicar_filtro_mes_df(df, mes_selecionado):
+    if not mes_selecionado or mes_selecionado == "TODOS" or df.empty:
+        return df
+
+    datas = serie_data_prev_entrega(df)
+    labels = datas.apply(label_mes_ano)
+
+    return df[labels == mes_selecionado]
+
+
 def norm(txt):
     txt = sem_acento(txt).upper().strip()
 
@@ -2258,15 +2328,15 @@ def montar_df_itens(itens):
     return df[cols]
 
 
-def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
+def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix="", filtro_mes=False):
     if df.empty:
         return df
 
     # Filtros na mesma linha.
-    # Admin: Analista | Departamento | Status | Fornecedor | Pesquisar pedido
-    # Analista: Departamento | Status | Fornecedor | Pesquisar pedido
+    # Admin: Analista | Departamento | Status | Fornecedor | Mês/Pedido
+    # Analista: Departamento | Status | Fornecedor | Mês/Pedido
     if pode_filtrar_analista and "analista" in df.columns:
-        col_analista, col_dep, col_status, col_fornecedor, col_busca = st.columns([1.0, 1.6, 1.0, 1.8, 1.8])
+        col_analista, col_dep, col_status, col_fornecedor, col_extra = st.columns([1.0, 1.6, 1.0, 1.8, 1.2])
 
         with col_analista:
             analistas = ["TODOS"] + sorted(df["analista"].dropna().unique().tolist())
@@ -2279,7 +2349,7 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_analista != "TODOS":
                 df = df[df["analista"] == f_analista]
     else:
-        col_dep, col_status, col_fornecedor, col_busca = st.columns([1.6, 1.0, 1.8, 2.0])
+        col_dep, col_status, col_fornecedor, col_extra = st.columns([1.6, 1.0, 1.8, 1.2])
 
     with col_dep:
         if "departamento" in df.columns:
@@ -2343,18 +2413,30 @@ def aplicar_filtros(df, pode_filtrar_analista=True, key_prefix=""):
             if f_fornecedores:
                 df = df[df["fornecedor"].isin(f_fornecedores)]
 
-    with col_busca:
-        busca = st.text_input(
-            "Pesquisar pedido",
-            key=f"{key_prefix}_busca",
-            placeholder="Ex.: LADK55"
-        )
+    with col_extra:
+        if filtro_mes:
+            opcoes_mes = ["TODOS"] + preparar_opcoes_mes(df)
 
-    if busca:
-        busca_norm = norm(busca)
+            mes_selecionado = st.selectbox(
+                "Mês",
+                opcoes_mes,
+                key=f"{key_prefix}_mes"
+            )
 
-        if busca_norm:
-            df = df[df["pedido"].astype(str).apply(lambda x: busca_norm in norm(x))]
+            if mes_selecionado != "TODOS":
+                df = aplicar_filtro_mes_df(df, mes_selecionado)
+        else:
+            busca = st.text_input(
+                "Pesquisar pedido",
+                key=f"{key_prefix}_busca",
+                placeholder="Ex.: LADK55"
+            )
+
+            if busca:
+                busca_norm = norm(busca)
+
+                if busca_norm:
+                    df = df[df["pedido"].astype(str).apply(lambda x: busca_norm in norm(x))]
 
     return df
 
@@ -2990,7 +3072,8 @@ def tela_analise_atrasos(analista=None):
     df_filtrado = aplicar_filtros(
         df,
         pode_filtrar_analista=pode_filtrar_analista,
-        key_prefix=key_prefix
+        key_prefix=key_prefix,
+        filtro_mes=True
     )
 
     df_base = preparar_base_analise_atrasos(df_filtrado)
@@ -3067,7 +3150,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     max_mes = max([m["saldo"] for m in meses], default=1)
     meses_html = ""
     for m in meses:
-        h = max(3, min(100, (m["saldo"] / max_mes) * 100))
+        h = max(3, min(78, (m["saldo"] / max_mes) * 78))
         meses_html += f"""
             <div class="mes-item">
                 <div class="rotulo-barra" style="bottom:{h:.1f}%">{escape(m["label"])}</div>
@@ -3229,7 +3312,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             letter-spacing: -0.02em;
         }}
         .chart-area {{
-            height: 245px;
+            height: 255px;
             position: relative;
             overflow: visible;
         }}
@@ -3256,7 +3339,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             align-items: flex-end;
             justify-content: space-around;
             gap: 8px;
-            padding: 18px 8px 44px 32px;
+            padding: 34px 8px 44px 32px;
             border-bottom: 1px solid rgba(148,163,184,.35);
             background: repeating-linear-gradient(to top, transparent 0, transparent 38px, rgba(148,163,184,.16) 39px);
         }}
@@ -3278,7 +3361,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
         .rotulo-barra {{
             position: absolute;
             transform: translateY(-100%);
-            margin-bottom: 7px;
+            margin-bottom: 5px;
             color: #0f172a;
             background: rgba(248,250,252,.96);
             border-radius: 5px;
