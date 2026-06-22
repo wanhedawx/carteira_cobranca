@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from unicodedata import normalize
 import hashlib
 import io
+import textwrap
 import re
 import json
 import secrets as py_secrets
@@ -3451,6 +3452,7 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
     </div>
     """
 
+    html = textwrap.dedent(html).strip()
     st.markdown(html, unsafe_allow_html=True)
 
 
