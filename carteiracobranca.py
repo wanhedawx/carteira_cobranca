@@ -3337,7 +3337,8 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
 
         .legenda-curva-com-percentual b {{
             margin-left: 3px;
-            color: #0f172a;
+            color: #f8fafc;
+            font-weight: 900;
         }}
         .legenda-curva span {{
             display: inline-flex;
