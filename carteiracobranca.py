@@ -3210,9 +3210,9 @@ def renderizar_dashboard_4_graficos(df_meses, df_curva, df_fornecedor, df_depart
             box-shadow: 0 4px 16px var(--dash-shadow);
         }}
 
-        .dash4 * {
+        .dash4 * {{
             box-sizing: border-box;
-        }
+        }}
 
         .dash-card {{
             background: transparent;
