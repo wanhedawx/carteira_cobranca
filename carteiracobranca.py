@@ -2518,6 +2518,236 @@ def aplicar_filtros_por_estado(df, pode_filtrar_analista=True, key_prefix=""):
     return df_filtrado
 
 
+
+TIPOS_LIMPEZA_COBRANCA = [
+    "COBRANCA",
+    "NECESSARIO_ACIONAR_COMPRADOR",
+    "COMPRADOR_ACIONADO",
+    "EXCLUSAO_COBRANCA",
+]
+
+
+def resumo_limpeza_cobranca_usuario(usuario_alvo):
+    sql = text("""
+        select
+            count(*) as eventos,
+            count(distinct h.doc_id) as pedidos
+        from carteira_historico h
+        join carteira_pedidos p
+          on p.doc_id = h.doc_id
+        where lower(coalesce(h.usuario, '')) = lower(:usuario)
+          and h.tipo in :tipos
+    """).bindparams(bindparam("tipos", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                sql,
+                {
+                    "usuario": usuario_alvo,
+                    "tipos": TIPOS_LIMPEZA_COBRANCA,
+                }
+            ).mappings().first()
+
+        return {
+            "eventos": int(row.get("eventos", 0) or 0) if row else 0,
+            "pedidos": int(row.get("pedidos", 0) or 0) if row else 0,
+        }
+
+    except Exception as e:
+        st.error("Erro ao consultar testes de cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def recalcular_cobranca_doc(conn, doc_id, data_evento):
+    sql_hist = text("""
+        select
+            tipo,
+            data,
+            cobranca_numero,
+            status_apos
+        from carteira_historico
+        where doc_id = :doc_id
+          and tipo in :tipos
+        order by data asc, id asc
+    """).bindparams(bindparam("tipos", expanding=True))
+
+    rows = conn.execute(
+        sql_hist,
+        {
+            "doc_id": doc_id,
+            "tipos": TIPOS_LIMPEZA_COBRANCA,
+        }
+    ).mappings().all()
+
+    cobrancas = 0
+    ultima_cobranca = ""
+    comprador_acionado = False
+    acionar_comprador = False
+
+    for r in rows:
+        tipo = r.get("tipo", "")
+
+        if tipo == "COBRANCA":
+            numero = int(r.get("cobranca_numero") or 0)
+
+            if numero >= cobrancas:
+                cobrancas = numero
+                ultima_cobranca = r.get("data", "") or ""
+
+        elif tipo == "NECESSARIO_ACIONAR_COMPRADOR":
+            acionar_comprador = True
+
+        elif tipo == "COMPRADOR_ACIONADO":
+            comprador_acionado = True
+
+    if comprador_acionado:
+        novo_status = STATUS_COMPRADOR_ACIONADO
+    elif acionar_comprador:
+        novo_status = STATUS_ACIONAR_COMPRADOR
+    else:
+        novo_status = status_por_cobranca(cobrancas, False)
+
+    conn.execute(
+        text("""
+            update carteira_pedidos
+            set
+                cobrancas = :cobrancas,
+                comprador_acionado = :comprador_acionado,
+                ultima_cobranca = :ultima_cobranca,
+                status = :status,
+                atualizado_em = :atualizado_em
+            where doc_id = :doc_id
+              and ativo = true
+        """),
+        {
+            "doc_id": doc_id,
+            "cobrancas": cobrancas,
+            "comprador_acionado": comprador_acionado,
+            "ultima_cobranca": ultima_cobranca,
+            "status": novo_status,
+            "atualizado_em": data_evento,
+        }
+    )
+
+
+def limpar_testes_cobranca_usuario(usuario_alvo):
+    sql_docs = text("""
+        select distinct h.doc_id
+        from carteira_historico h
+        where lower(coalesce(h.usuario, '')) = lower(:usuario)
+          and h.tipo in :tipos
+          and h.doc_id is not null
+    """).bindparams(bindparam("tipos", expanding=True))
+
+    sql_delete = text("""
+        delete from carteira_historico
+        where lower(coalesce(usuario, '')) = lower(:usuario)
+          and tipo in :tipos
+    """).bindparams(bindparam("tipos", expanding=True))
+
+    data_evento = agora_str()
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                sql_docs,
+                {
+                    "usuario": usuario_alvo,
+                    "tipos": TIPOS_LIMPEZA_COBRANCA,
+                }
+            ).mappings().all()
+
+            doc_ids = [r["doc_id"] for r in rows if r.get("doc_id")]
+
+            if not doc_ids:
+                return {
+                    "pedidos": 0,
+                    "eventos": 0,
+                }
+
+            result = conn.execute(
+                sql_delete,
+                {
+                    "usuario": usuario_alvo,
+                    "tipos": TIPOS_LIMPEZA_COBRANCA,
+                }
+            )
+
+            eventos = int(result.rowcount or 0)
+
+            for doc_id in doc_ids:
+                recalcular_cobranca_doc(conn, doc_id, data_evento)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        return {
+            "pedidos": len(doc_ids),
+            "eventos": eventos,
+        }
+
+    except Exception as e:
+        st.error("Erro ao limpar testes de cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def tela_limpeza_testes_admin():
+    st.header("Limpar testes de cobrança")
+
+    st.warning(
+        "Essa tela remove os registros de teste feitos pelo usuário selecionado no histórico de cobrança "
+        "e recalcula o status dos pedidos afetados."
+    )
+
+    usuarios = list(ANALISTAS.keys())
+
+    indice_cleviton = usuarios.index("Cleviton") if "Cleviton" in usuarios else 0
+
+    usuario_alvo = st.selectbox(
+        "Usuário para limpar",
+        usuarios,
+        index=indice_cleviton,
+        key="usuario_limpeza_cobranca"
+    )
+
+    resumo = resumo_limpeza_cobranca_usuario(usuario_alvo)
+
+    c1, c2 = st.columns(2)
+    c1.metric("Pedidos afetados", resumo["pedidos"])
+    c2.metric("Eventos de cobrança/teste", resumo["eventos"])
+
+    st.caption(
+        "Tipos removidos: COBRANCA, NECESSARIO_ACIONAR_COMPRADOR, "
+        "COMPRADOR_ACIONADO e EXCLUSAO_COBRANCA."
+    )
+
+    confirmar = st.text_input(
+        "Digite LIMPAR para confirmar",
+        key="confirmar_limpeza_cobranca"
+    )
+
+    if st.button(
+        "Limpar testes de cobrança",
+        type="primary",
+        use_container_width=True,
+        disabled=(confirmar.strip().upper() != "LIMPAR" or resumo["eventos"] == 0)
+    ):
+        resultado = limpar_testes_cobranca_usuario(usuario_alvo)
+
+        st.success(
+            f"Limpeza concluída: {resultado['eventos']} evento(s) removido(s) "
+            f"e {resultado['pedidos']} pedido(s) recalculado(s)."
+        )
+        st.rerun()
+
+
 def metricas(df):
     if df.empty:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -4380,7 +4610,7 @@ st.caption("Controle de pedidos atrasados.")
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Análise Atrasos", "Exportar Comprador", "Senhas", "Regras"],
+        ["Atualizar", "Carteira Geral", "Análise Atrasos", "Exportar Comprador", "Senhas", "Limpeza", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -4399,6 +4629,9 @@ if usuario_logado == "Admin":
 
     elif pagina == "Senhas":
         tela_senhas_admin()
+
+    elif pagina == "Limpeza":
+        tela_limpeza_testes_admin()
 
     elif pagina == "Regras":
         tela_regras()
