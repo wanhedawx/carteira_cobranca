@@ -836,7 +836,7 @@ def historico_doc(doc_id):
                     select tipo, data, usuario, observacao, cobranca_numero, status_apos
                     from carteira_historico
                     where doc_id = :doc_id
-                    order by data desc, id desc
+                    order by data asc, id asc
                 """),
                 {"doc_id": doc_id}
             ).mappings().all()
@@ -848,6 +848,114 @@ def historico_doc(doc_id):
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
+
+
+
+def formatar_historico_pedido(historico):
+    if not historico:
+        return pd.DataFrame()
+
+    mapa_tipo = {
+        "COBRANCA": "Cobrança registrada",
+        "RETORNO_COBRANCA": "Retorno da cobrança",
+        "NECESSARIO_ACIONAR_COMPRADOR": "Necessário acionar comprador",
+        "COMPRADOR_ACIONADO": "Comprador acionado",
+        "EXCLUSAO_COBRANCA": "Exclusão de cobrança",
+        "CANCELADO_RETIRADO": "Retirado da conta",
+        "SAIU_DA_CARTEIRA": "Saiu da carteira",
+        "COM_AGENDAMENTO": "Com agendamento",
+        "FORA_DO_ATRASO": "Fora do atraso",
+    }
+
+    linhas = []
+
+    for h in historico:
+        tipo = h.get("tipo", "") or ""
+        cobranca_numero = h.get("cobranca_numero", "")
+
+        try:
+            cobranca_numero = int(cobranca_numero or 0)
+        except Exception:
+            cobranca_numero = 0
+
+        linhas.append({
+            "Data": h.get("data", ""),
+            "Usuário": h.get("usuario", ""),
+            "Ação": mapa_tipo.get(tipo, tipo),
+            "Cobrança": cobranca_numero if cobranca_numero > 0 else "",
+            "Retorno / Observação": h.get("observacao", ""),
+            "Status Após": h.get("status_apos", ""),
+        })
+
+    return pd.DataFrame(linhas)
+
+
+def painel_historico_pedido(df_base, key_prefix):
+    if df_base is None or df_base.empty or "doc_id" not in df_base.columns:
+        return
+
+    df_hist = df_base.copy()
+
+    if "pedido" not in df_hist.columns:
+        return
+
+    df_hist["opcao_historico"] = (
+        df_hist["pedido"].astype(str)
+        + " | "
+        + df_hist.get("fornecedor", "").astype(str)
+        + " | "
+        + df_hist.get("dt_agendada", "").astype(str)
+    )
+
+    df_hist = df_hist.drop_duplicates(subset=["doc_id"])
+
+    opcoes = df_hist["opcao_historico"].tolist()
+
+    if not opcoes:
+        return
+
+    st.markdown("### Histórico do pedido")
+
+    col_hist_1, col_hist_2 = st.columns([3, 1])
+
+    with col_hist_1:
+        opcao = st.selectbox(
+            "Selecione o pedido",
+            opcoes,
+            key=f"{key_prefix}_pedido_historico"
+        )
+
+    with col_hist_2:
+        st.write("")
+        st.write("")
+        ver_historico = st.button(
+            "Ver histórico do pedido",
+            key=f"{key_prefix}_btn_historico",
+            use_container_width=True
+        )
+
+    if not ver_historico:
+        return
+
+    linha = df_hist[df_hist["opcao_historico"] == opcao].iloc[0]
+    doc_id = linha.get("doc_id", "")
+    pedido = linha.get("pedido", "")
+
+    historico = historico_doc(doc_id)
+
+    if not historico:
+        st.info(f"Pedido {pedido} ainda não possui histórico.")
+        return
+
+    hist_df = formatar_historico_pedido(historico)
+
+    st.caption(f"Histórico completo do pedido **{pedido}** em ordem cronológica.")
+    st.dataframe(
+        hist_df,
+        use_container_width=True,
+        hide_index=True,
+        height=320
+    )
 
 
 def buscar_obs_ultima_cobranca(doc_ids):
@@ -872,7 +980,7 @@ def buscar_obs_ultima_cobranca(doc_ids):
               )
               or (
                   p.status not in ('ACIONAR COMPRADOR', 'COMPRADOR ACIONADO')
-                  and h.tipo = 'COBRANCA'
+                  and h.tipo in ('COBRANCA', 'RETORNO_COBRANCA')
                   and h.cobranca_numero = p.cobrancas
               )
           )
@@ -931,6 +1039,175 @@ def buscar_data_cobranca_por_numero(doc_ids):
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         st.stop()
+
+
+
+def buscar_retorno_cobranca_por_numero(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id, cobranca_numero)
+            doc_id,
+            cobranca_numero,
+            observacao,
+            data
+        from carteira_historico
+        where doc_id in :ids
+          and tipo = 'RETORNO_COBRANCA'
+          and cobranca_numero is not null
+        order by doc_id, cobranca_numero, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        mapa = {}
+
+        for r in rows:
+            doc_id = r["doc_id"]
+            numero = int(r.get("cobranca_numero") or 0)
+
+            mapa.setdefault(doc_id, {})[numero] = {
+                "observacao": r.get("observacao", "") or "",
+                "data": r.get("data", "") or "",
+            }
+
+        return mapa
+
+    except Exception as e:
+        st.error("Erro ao buscar retornos das cobranças.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def registrar_retorno_cobranca_lote(doc_ids, usuario, retorno_opcao, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return
+
+    retorno_opcao = str(retorno_opcao or "").strip().upper()
+    observacao = str(observacao or "").strip()
+
+    if retorno_opcao not in ["HOUVE RETORNO", "NÃO HOUVE RETORNO"]:
+        st.warning("Selecione o retorno da cobrança.")
+        return
+
+    if retorno_opcao == "HOUVE RETORNO" and not observacao:
+        st.warning("Quando houve retorno, descreva o retorno recebido.")
+        return
+
+    obs_final = "NÃO HOUVE RETORNO" if retorno_opcao == "NÃO HOUVE RETORNO" else observacao
+
+    itens = buscar_docs_por_ids(
+        ids,
+        campos=[
+            "doc_id",
+            "pedido",
+            "cobrancas",
+            "status",
+        ]
+    )
+
+    if not itens:
+        st.error("Nenhum pedido encontrado para registrar retorno.")
+        return
+
+    data_evento = agora_str()
+    historicos = []
+
+    for item in itens:
+        cobrancas = int(item.get("cobrancas", 0) or 0)
+
+        if cobrancas <= 0:
+            continue
+
+        historicos.append({
+            "doc_id": item["doc_id"],
+            "pedido": item.get("pedido", ""),
+            "tipo": "RETORNO_COBRANCA",
+            "data": data_evento,
+            "usuario": usuario,
+            "observacao": obs_final,
+            "cobranca_numero": cobrancas,
+            "status_apos": item.get("status", ""),
+        })
+
+    if not historicos:
+        st.warning("Nenhum pedido selecionado possui cobrança para receber retorno.")
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(INSERT_HISTORICO_SQL, historicos)
+
+            conn.execute(
+                text("""
+                    update carteira_pedidos
+                    set atualizado_em = :atualizado_em
+                    where doc_id in :ids
+                """).bindparams(bindparam("ids", expanding=True)),
+                {
+                    "ids": [h["doc_id"] for h in historicos],
+                    "atualizado_em": data_evento,
+                }
+            )
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+    except Exception as e:
+        st.error("Erro ao registrar retorno da cobrança.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+def tem_retorno_da_cobranca(retornos_por_doc, doc_id, cobranca_numero):
+    try:
+        cobranca_numero = int(cobranca_numero or 0)
+    except Exception:
+        cobranca_numero = 0
+
+    if cobranca_numero <= 0:
+        return True
+
+    retorno = retornos_por_doc.get(doc_id, {}).get(cobranca_numero)
+
+    if not retorno:
+        return False
+
+    return bool(str(retorno.get("observacao", "")).strip())
+
+
+def texto_retorno_ultima_cobranca(linha, retornos_por_doc):
+    doc_id = linha.get("doc_id", "")
+
+    try:
+        cobrancas = int(linha.get("cobrancas", 0) or 0)
+    except Exception:
+        cobrancas = 0
+
+    if cobrancas <= 0:
+        return ""
+
+    retorno = retornos_por_doc.get(doc_id, {}).get(cobrancas)
+
+    if not retorno:
+        return "PENDENTE"
+
+    obs = str(retorno.get("observacao", "") or "").strip()
+
+    return obs if obs else "PENDENTE"
+
 
 
 def montar_linha_banco(dados):
@@ -1061,13 +1338,26 @@ def registrar_cobranca_lote(doc_ids, usuario, observacao):
         st.error("Nenhum pedido encontrado para registrar cobrança.")
         return
 
+    retornos_por_doc = buscar_retorno_cobranca_por_numero(ids)
+
     data_evento = agora_str()
     updates = []
     historicos = []
+    bloqueados_retorno = []
+    bloqueados_limite = []
 
     for item in itens:
         doc_id = item["doc_id"]
         atual = int(item.get("cobrancas", 0) or 0)
+
+        if atual >= 3:
+            bloqueados_limite.append(item.get("pedido", doc_id))
+            continue
+
+        if atual > 0 and not tem_retorno_da_cobranca(retornos_por_doc, doc_id, atual):
+            bloqueados_retorno.append(item.get("pedido", doc_id))
+            continue
+
         nova_qtd = atual + 1
         comprador_acionado = bool(item.get("comprador_acionado", False))
         novo_status = status_por_cobranca(nova_qtd, comprador_acionado)
@@ -1090,6 +1380,22 @@ def registrar_cobranca_lote(doc_ids, usuario, observacao):
             "cobranca_numero": nova_qtd,
             "status_apos": novo_status,
         })
+
+    if bloqueados_retorno:
+        st.warning(
+            "Antes de registrar a próxima cobrança, informe o retorno da última cobrança "
+            "ou marque como NÃO HOUVE RETORNO. Pedidos bloqueados: "
+            + ", ".join(str(x) for x in bloqueados_retorno[:20])
+        )
+
+    if bloqueados_limite:
+        st.warning(
+            "Alguns pedidos já possuem 3 cobranças e não receberam nova cobrança: "
+            + ", ".join(str(x) for x in bloqueados_limite[:20])
+        )
+
+    if not updates:
+        return
 
     try:
         with engine.begin() as conn:
@@ -2723,6 +3029,11 @@ def tela_limpeza_testes_admin():
     c1.metric("Pedidos afetados", resumo["pedidos"])
     c2.metric("Eventos de cobrança/teste", resumo["eventos"])
 
+    st.caption(
+        "Tipos removidos: COBRANCA, NECESSARIO_ACIONAR_COMPRADOR, "
+        "COMPRADOR_ACIONADO e EXCLUSAO_COBRANCA."
+    )
+
     confirmar = st.text_input(
         "Digite LIMPAR para confirmar",
         key="confirmar_limpeza_cobranca"
@@ -4124,8 +4435,16 @@ def tela_carteira(analista=None):
     df = montar_df_itens(itens)
 
     if not df.empty and "doc_id" in df.columns:
-        obs_por_doc = buscar_obs_ultima_cobranca(df["doc_id"].dropna().tolist())
+        doc_ids_base = df["doc_id"].dropna().tolist()
+
+        obs_por_doc = buscar_obs_ultima_cobranca(doc_ids_base)
         df["obs_cobranca"] = df["doc_id"].map(obs_por_doc).fillna("")
+
+        retornos_por_doc_base = buscar_retorno_cobranca_por_numero(doc_ids_base)
+        df["retorno_ultima_cobranca"] = df.apply(
+            lambda linha: texto_retorno_ultima_cobranca(linha, retornos_por_doc_base),
+            axis=1
+        )
 
     key_prefix = "carteira_geral" if analista is None else f"carteira_{analista}"
     pode_filtrar_analista = analista is None
@@ -4154,7 +4473,7 @@ def tela_carteira(analista=None):
 
     ordem_tela = [
         "analista", "departamento", "fornecedor", "pedido",
-        "dt_agendada", "status", "cobrancas", "obs_cobranca", "ultima_cobranca",
+        "dt_agendada", "status", "cobrancas", "obs_cobranca", "retorno_ultima_cobranca", "ultima_cobranca",
         "saldo_cmv", "pre_nota_cmv", "nao_faturado_cmv",
     ]
 
@@ -4169,6 +4488,7 @@ def tela_carteira(analista=None):
         "status": "Status",
         "cobrancas": "Cobranças",
         "obs_cobranca": "Obs Cobrança",
+        "retorno_ultima_cobranca": "Último Retorno",
         "ultima_cobranca": "Última Cobrança",
         "saldo_cmv": "Saldo CMV",
         "pre_nota_cmv": "Pré-nota CMV",
@@ -4191,6 +4511,8 @@ def tela_carteira(analista=None):
         hide_index=True,
         height=330
     )
+
+    painel_historico_pedido(df_filtrado, key_prefix=f"{key_prefix}_carteira")
 
     # Admin só consulta/exporta a carteira geral.
     # A tela de registrar cobrança aparece apenas para os analistas.
@@ -4273,6 +4595,15 @@ def tela_carteira(analista=None):
 
     st.success(f"{len(df_acao)} pedido(s) selecionado(s).")
 
+    doc_ids = df_acao["doc_id"].dropna().tolist()
+    retornos_por_doc = buscar_retorno_cobranca_por_numero(doc_ids)
+
+    df_acao = df_acao.copy()
+    df_acao["retorno_ultima_cobranca"] = df_acao.apply(
+        lambda linha: texto_retorno_ultima_cobranca(linha, retornos_por_doc),
+        axis=1
+    )
+
     colunas_acao = [
         "analista",
         "departamento",
@@ -4282,6 +4613,7 @@ def tela_carteira(analista=None):
         "status",
         "cobrancas",
         "obs_cobranca",
+        "retorno_ultima_cobranca",
         "ultima_cobranca",
         "saldo_cmv",
         "pre_nota_cmv",
@@ -4319,11 +4651,64 @@ def tela_carteira(analista=None):
     c1.metric("Pedidos selecionados", len(df_acao))
     c2.metric("Saldo CMV selecionado", formatar_moeda(total_saldo))
 
-    obs = st.text_area(
+    obs_cobranca = st.text_area(
         "Observação da cobrança",
         key=f"obs_lote_{analista or 'geral'}",
         placeholder="Ex.: cobrado representante X referente às fábricas/pedidos selecionados..."
     )
+
+    df_pendente_retorno = df_acao[
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0)
+        & (df_acao["retorno_ultima_cobranca"].astype(str).str.upper() == "PENDENTE")
+    ].copy()
+
+    tem_retorno_pendente = not df_pendente_retorno.empty
+    tem_cobranca_para_retorno = bool(
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0).any()
+    )
+
+    if tem_cobranca_para_retorno:
+        st.markdown("### Retorno da última cobrança")
+
+        if tem_retorno_pendente:
+            st.warning(
+                "Para liberar a próxima cobrança, informe o retorno da última cobrança "
+                "ou marque como NÃO HOUVE RETORNO."
+            )
+        else:
+            st.success("Todos os pedidos selecionados com cobrança já possuem retorno da última cobrança.")
+
+        retorno_opcao = st.selectbox(
+            "Retorno",
+            ["", "HOUVE RETORNO", "NÃO HOUVE RETORNO"],
+            key=f"retorno_opcao_{analista or 'geral'}"
+        )
+
+        obs_retorno = st.text_area(
+            "Detalhe do retorno",
+            key=f"obs_retorno_{analista or 'geral'}",
+            placeholder="Ex.: fornecedor pediu retorno amanhã, informou previsão, ou marque NÃO HOUVE RETORNO."
+        )
+
+        if st.button(
+            "Salvar retorno da última cobrança",
+            key=f"salvar_retorno_{analista or 'geral'}",
+            use_container_width=True,
+            disabled=(retorno_opcao == "")
+        ):
+            doc_ids_retorno = df_acao[
+                pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0
+            ]["doc_id"].dropna().tolist()
+
+            registrar_retorno_cobranca_lote(
+                doc_ids_retorno,
+                usuario_logado,
+                retorno_opcao,
+                obs_retorno
+            )
+
+            st.success("Retorno registrado.")
+            st.rerun()
 
     maior_cobranca_selecionada = 0
 
@@ -4351,8 +4736,6 @@ def tela_carteira(analista=None):
         )
     else:
         cobranca_excluir_numero = None
-
-    doc_ids = df_acao["doc_id"].dropna().tolist()
 
     col_a, col_b, col_c, col_d = st.columns(4)
 
@@ -4382,13 +4765,13 @@ def tela_carteira(analista=None):
             "Registrar cobrança",
             key=f"cobrar_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not tem_menos_de_2
+            disabled=(not tem_menos_de_2 or tem_retorno_pendente)
         ):
             doc_ids_cobranca = df_acao[
                 df_acao["cobrancas"].fillna(0).astype(int) < 3
             ]["doc_id"].dropna().tolist()
 
-            registrar_cobranca_lote(doc_ids_cobranca, usuario_logado, obs)
+            registrar_cobranca_lote(doc_ids_cobranca, usuario_logado, obs_cobranca)
             st.success(f"Cobrança registrada para {len(doc_ids_cobranca)} pedido(s).")
             st.rerun()
 
@@ -4397,13 +4780,13 @@ def tela_carteira(analista=None):
             "Necessário acionar comprador",
             key=f"necessario_comprador_lote_{analista or 'geral'}",
             use_container_width=True,
-            disabled=not tem_3_cobrancas
+            disabled=(not tem_3_cobrancas or tem_retorno_pendente)
         ):
             doc_ids_comprador = df_acao[
                 df_acao["cobrancas"].fillna(0).astype(int) >= 3
             ]["doc_id"].dropna().tolist()
 
-            sinalizar_acionar_comprador_lote(doc_ids_comprador, usuario_logado, obs)
+            sinalizar_acionar_comprador_lote(doc_ids_comprador, usuario_logado, obs_cobranca)
             st.success("Pedidos sinalizados para acionar comprador.")
             st.rerun()
 
@@ -4418,7 +4801,7 @@ def tela_carteira(analista=None):
                 df_acao["status"] == STATUS_ACIONAR_COMPRADOR
             ]["doc_id"].dropna().tolist()
 
-            marcar_comprador_acionado_lote(doc_ids_acionar, usuario_logado, obs)
+            marcar_comprador_acionado_lote(doc_ids_acionar, usuario_logado, obs_cobranca)
             st.success(f"Comprador acionado registrado para {len(doc_ids_acionar)} pedido(s).")
             st.rerun()
 
@@ -4432,24 +4815,11 @@ def tela_carteira(analista=None):
             excluir_cobranca_selecionada_lote(
                 doc_ids,
                 usuario_logado,
-                obs,
+                obs_cobranca,
                 cobranca_excluir_numero
             )
             st.success("Cobrança selecionada excluída dos pedidos quando aplicável.")
             st.rerun()
-
-    if len(df_acao) == 1:
-        doc_id_unico = df_acao.iloc[0]["doc_id"]
-
-        if st.button("Carregar histórico do pedido selecionado", key=f"historico_{doc_id_unico}"):
-            historico = historico_doc(doc_id_unico)
-
-            if historico:
-                hist_df = pd.DataFrame(historico)
-                st.caption("Histórico")
-                st.dataframe(hist_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("Sem histórico para este pedido.")
 
 
 def tela_fora_atraso():
