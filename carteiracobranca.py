@@ -5779,7 +5779,6 @@ def gerar_excel_ruptura_filtrada(df):
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
-    st.caption("TOP 5 fornecedores por departamento pela Contagem de Cod_Prod, igual à Tabela Dinâmica; maior Saldo CMV desempata. A data do pedido não é usada nesta carteira.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
