@@ -5040,7 +5040,7 @@ def mapear_colunas_ruptura(df):
         "fornecedor": _col_ruptura(df, ["Fornecedor", "Forneceor", "Vendor", "Razão Social", "Razao Social"]),
         "cod_prod": _col_ruptura(df, ["Cod_Prod", "Cod Prod", "Código Produto", "Codigo Produto", "Cod Produto", "Código", "Codigo", "SKU"]),
         "pedido": _col_ruptura(df, ["Pedido", "N Pedido", "Nº Pedido", "Num Pedido", "Número Pedido", "Numero Pedido", "OC", "Ordem"]),
-        "saldo_cmv": encontrar_coluna_valor_cmv(df, "saldo") or _col_ruptura(df, ["Saldo R$ (CMV)", "Saldo CMV", "Saldo R$", "Saldo Valor"]),
+        "saldo_cmv": _col_ruptura(df, ["Saldo S (CMV)", "Saldo R$ (CMV)", "Saldo CMV", "Saldo R$", "Saldo Valor"]) or encontrar_coluna_valor_cmv(df, "saldo"),
         "descricao": _col_ruptura(df, ["Desc_Prod", "Desc Prod", "Descrição", "Descricao", "Produto", "Desc Produto"]),
     }
     obrig = ["status", "departamento", "fornecedor", "cod_prod", "pedido", "saldo_cmv"]
@@ -5055,7 +5055,10 @@ def preparar_ruptura(df):
 
     base = df.copy()
     base["_status"] = base[cols["status"]].apply(norm)
-    base = base[base["_status"] == "RUPTURA"].copy()
+    mascara_ruptura = base["_status"].astype(str).str.contains(
+        r"\bRUPTURA\b", regex=True, na=False
+    )
+    base = base[mascara_ruptura].copy()
 
     if base.empty:
         return pd.DataFrame(), pd.DataFrame(), cols, []
@@ -5300,7 +5303,62 @@ def tela_upload_ruptura():
         st.info("Envie a nova base para atualizar somente a Carteira Ruptura.")
         return
 
-    df = ler_arquivo(arquivo)
+    try:
+        if arquivo.name.lower().endswith(".csv"):
+            df = ler_arquivo(arquivo)
+            aba_ruptura = "CSV"
+        else:
+            conteudo_excel = arquivo.getvalue()
+            xls = pd.ExcelFile(io.BytesIO(conteudo_excel))
+            df = None
+            aba_ruptura = None
+            melhor_score = -1
+
+            for nome_aba in xls.sheet_names:
+                try:
+                    candidato = pd.read_excel(io.BytesIO(conteudo_excel), sheet_name=nome_aba)
+                except Exception:
+                    continue
+
+                if candidato is None or candidato.empty:
+                    continue
+
+                score = 0
+                mapa_cols = [norm(c) for c in candidato.columns]
+
+                for alternativas in [
+                    ["STATUS"],
+                    ["DEPARTAMENTO", "DEPTO", "SETOR"],
+                    ["FORNECEDOR", "FORNECEOR", "VENDOR"],
+                    ["COD PROD", "CODIGO PRODUTO", "SKU"],
+                    ["PEDIDO", "NUM PEDIDO"],
+                    ["SALDO S CMV", "SALDO R CMV", "SALDO CMV"],
+                ]:
+                    if any(any(alt == col or alt in col for col in mapa_cols) for alt in alternativas):
+                        score += 1
+
+                col_status_candidato = encontrar_coluna_fixa(candidato, ["STATUS", "Status"])
+                if col_status_candidato:
+                    status_norm = candidato[col_status_candidato].apply(norm)
+                    if status_norm.str.contains(r"\bRUPTURA\b", regex=True, na=False).any():
+                        score += 10
+
+                if score > melhor_score:
+                    melhor_score = score
+                    df = candidato
+                    aba_ruptura = nome_aba
+
+            if df is None:
+                st.error("Não consegui localizar a base detalhada em nenhuma aba do Excel.")
+                return
+
+        st.caption(f"Base da Ruptura identificada em: {aba_ruptura}")
+    except Exception as e:
+        st.error("Erro ao localizar a base da Carteira Ruptura no arquivo.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return
+
     base_top, top5, cols, faltando = preparar_ruptura(df)
 
     if faltando:
