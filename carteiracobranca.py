@@ -5353,18 +5353,12 @@ def tela_upload_ruptura():
 
 def tela_carteira_ruptura(analista=None):
     st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
-    st.caption("TOP 5 fornecedores de cada departamento por quantidade de produtos em RUPTURA.")
+    st.caption("TOP 5 fornecedores de cada departamento por quantidade de produtos da base de Ruptura.")
 
     df = buscar_carteira_ruptura(analista)
     if df.empty:
         st.info("Nenhum pedido ativo na Carteira Ruptura. Atualize a base primeiro.")
         return
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pedidos", int(df["pedido"].nunique()))
-    c2.metric("Fornecedores TOP 5", int(df[["departamento", "fornecedor"]].drop_duplicates().shape[0]))
-    c3.metric("Produtos", int(pd.to_numeric(df["qtd_produtos"], errors="coerce").fillna(0).sum()))
-    c4.metric("Saldo CMV", formatar_moeda(pd.to_numeric(df["saldo_cmv"], errors="coerce").fillna(0).sum()))
 
     cols = st.columns([1.2, 1.5, 2.2, 1.3])
     with cols[0]:
@@ -5388,6 +5382,24 @@ def tela_carteira_ruptura(analista=None):
         busca = st.text_input("Pesquisar pedido", key=f"rupt_pedido_{analista or 'admin'}")
     if busca.strip():
         dff = dff[dff["pedido"].astype(str).str.contains(busca.strip(), case=False, na=False)]
+
+    # Cards sempre refletem exatamente o conjunto filtrado na tela.
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Pedidos", int(dff["pedido"].nunique()))
+    c2.metric(
+        "Fornecedores TOP 5",
+        int(dff[["departamento", "fornecedor"]].drop_duplicates().shape[0])
+    )
+    c3.metric(
+        "Produtos",
+        int(pd.to_numeric(dff["qtd_produtos"], errors="coerce").fillna(0).sum())
+    )
+    c4.metric(
+        "Saldo CMV",
+        formatar_moeda(
+            pd.to_numeric(dff["saldo_cmv"], errors="coerce").fillna(0).sum()
+        )
+    )
 
     exib = dff[[
         "doc_id", "analista", "departamento", "ranking_departamento", "fornecedor",
