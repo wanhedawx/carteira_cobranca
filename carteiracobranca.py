@@ -5766,6 +5766,7 @@ def gerar_excel_ruptura_filtrada(df):
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
+    st.caption("TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata. A data do pedido não é usada nesta carteira.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
@@ -5829,7 +5830,7 @@ def tela_upload_ruptura():
 
 def tela_carteira_ruptura(analista=None):
     st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
-    st.caption("TOP 5 fornecedores de cada departamento.")
+    st.caption("TOP 5 fornecedores por departamento pela quantidade de produtos. Nesta carteira, a data do pedido não interfere na seleção.")
 
     df = buscar_carteira_ruptura(analista)
     if df.empty:
@@ -6226,13 +6227,18 @@ if usuario_logado == "Admin":
 else:
     pagina = st.radio(
         "Menu",
-        ["Minha Carteira", "Análise Atrasos", "Regras"],
+        ["Minha Carteira", "Carteira Ruptura", "Análise Atrasos", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
     if pagina == "Minha Carteira":
         tela_carteira(usuario_logado)
+
+    elif pagina == "Carteira Ruptura":
+        # Mostra somente os departamentos vinculados ao analista logado.
+        # A Carteira Ruptura NÃO depende de data de atraso/previsão.
+        tela_carteira_ruptura(usuario_logado)
 
     elif pagina == "Análise Atrasos":
         tela_analise_atrasos(usuario_logado)
