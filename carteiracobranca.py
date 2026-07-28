@@ -4966,6 +4966,445 @@ def tela_senhas_admin():
     st.write("4. A partir daí, o usuário entra com a senha nova.")
 
 
+
+# =========================
+# CARTEIRA RUPTURA
+# =========================
+# Esta carteira é totalmente separada da carteira de atrasos existente.
+# Regra: STATUS = RUPTURA -> ranking por Departamento + Fornecedor ->
+# TOP 5 fornecedores por quantidade de produtos (Cod_Prod),
+# usando maior Saldo CMV como desempate.
+
+
+def inicializar_banco_ruptura():
+    sql = """
+    create table if not exists carteira_ruptura_pedidos (
+        doc_id text primary key,
+        pedido text,
+        analista text,
+        departamento text,
+        departamento_norm text,
+        fornecedor text,
+        qtd_produtos integer default 0,
+        saldo_cmv numeric default 0,
+        ranking_departamento integer,
+        status_cobranca text default 'PENDENTE',
+        cobrancas integer default 0,
+        ultima_cobranca text,
+        ativo boolean default true,
+        data_ultimo_upload text,
+        criado_em text,
+        atualizado_em text,
+        itens_json text default '[]'
+    );
+
+    create table if not exists carteira_ruptura_historico (
+        id bigserial primary key,
+        doc_id text references carteira_ruptura_pedidos(doc_id) on delete cascade,
+        pedido text,
+        tipo text,
+        data text,
+        usuario text,
+        observacao text,
+        cobranca_numero integer,
+        status_apos text
+    );
+
+    create index if not exists idx_ruptura_ativo_dep
+      on carteira_ruptura_pedidos (ativo, departamento_norm);
+
+    create index if not exists idx_ruptura_fornecedor
+      on carteira_ruptura_pedidos (fornecedor);
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(sql))
+    except Exception as e:
+        st.error("Erro ao criar/verificar as tabelas da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        st.stop()
+
+
+inicializar_banco_ruptura()
+
+
+def _col_ruptura(df, nomes):
+    return encontrar_coluna_fixa(df, nomes)
+
+
+def mapear_colunas_ruptura(df):
+    cols = {
+        "status": _col_ruptura(df, ["STATUS", "Status"]),
+        "departamento": _col_ruptura(df, ["Departamento", "Depto", "Setor"]),
+        "fornecedor": _col_ruptura(df, ["Fornecedor", "Forneceor", "Vendor", "Razão Social", "Razao Social"]),
+        "cod_prod": _col_ruptura(df, ["Cod_Prod", "Cod Prod", "Código Produto", "Codigo Produto", "Cod Produto", "Código", "Codigo", "SKU"]),
+        "pedido": _col_ruptura(df, ["Pedido", "N Pedido", "Nº Pedido", "Num Pedido", "Número Pedido", "Numero Pedido", "OC", "Ordem"]),
+        "saldo_cmv": encontrar_coluna_valor_cmv(df, "saldo") or _col_ruptura(df, ["Saldo R$ (CMV)", "Saldo CMV", "Saldo R$", "Saldo Valor"]),
+        "descricao": _col_ruptura(df, ["Desc_Prod", "Desc Prod", "Descrição", "Descricao", "Produto", "Desc Produto"]),
+    }
+    obrig = ["status", "departamento", "fornecedor", "cod_prod", "pedido", "saldo_cmv"]
+    faltando = [x for x in obrig if not cols.get(x)]
+    return cols, faltando
+
+
+def preparar_ruptura(df):
+    cols, faltando = mapear_colunas_ruptura(df)
+    if faltando:
+        return pd.DataFrame(), pd.DataFrame(), cols, faltando
+
+    base = df.copy()
+    base["_status"] = base[cols["status"]].apply(norm)
+    base = base[base["_status"] == "RUPTURA"].copy()
+
+    if base.empty:
+        return pd.DataFrame(), pd.DataFrame(), cols, []
+
+    base["_departamento"] = base[cols["departamento"]].fillna("").astype(str).str.strip()
+    base["_fornecedor"] = base[cols["fornecedor"]].fillna("").astype(str).str.strip()
+    base["_cod_prod"] = base[cols["cod_prod"]].fillna("").astype(str).str.strip()
+    base["_pedido"] = base[cols["pedido"]].fillna("").astype(str).str.strip()
+    base["_saldo_cmv"] = base[cols["saldo_cmv"]].apply(converter_numero)
+
+    base = base[
+        (base["_departamento"] != "") &
+        (base["_fornecedor"] != "") &
+        (base["_pedido"] != "") &
+        (base["_pedido"].str.lower() != "nan")
+    ].copy()
+
+    # Ranking do fornecedor no departamento.
+    # Conta produtos distintos; se a mesma SKU aparecer repetida, conta uma vez.
+    ranking = (
+        base.groupby(["_departamento", "_fornecedor"], dropna=False)
+        .agg(
+            qtd_produtos=("_cod_prod", lambda s: s[s.astype(str).str.strip() != ""].nunique()),
+            saldo_cmv=("_saldo_cmv", "sum"),
+        )
+        .reset_index()
+    )
+
+    ranking = ranking.sort_values(
+        ["_departamento", "qtd_produtos", "saldo_cmv", "_fornecedor"],
+        ascending=[True, False, False, True],
+        kind="mergesort",
+    )
+    ranking["ranking_departamento"] = ranking.groupby("_departamento").cumcount() + 1
+    top5 = ranking[ranking["ranking_departamento"] <= 5].copy()
+
+    base_top = base.merge(
+        top5[["_departamento", "_fornecedor", "qtd_produtos", "saldo_cmv", "ranking_departamento"]],
+        on=["_departamento", "_fornecedor"],
+        how="inner",
+        suffixes=("", "_fornecedor_total"),
+    )
+
+    return base_top, top5, cols, []
+
+
+def salvar_carteira_ruptura(df, origem="upload manual"):
+    base_top, top5, cols, faltando = preparar_ruptura(df)
+
+    if faltando:
+        st.error("Colunas obrigatórias não encontradas para Ruptura: " + ", ".join(faltando))
+        st.write("Mapeamento identificado:", cols)
+        return False
+
+    if base_top.empty:
+        st.warning("Nenhuma linha com STATUS = RUPTURA foi encontrada no arquivo.")
+        return False
+
+    agora = agora_str()
+    linhas = []
+
+    # Uma linha por PEDIDO + DEPARTAMENTO + FORNECEDOR.
+    for (pedido, departamento, fornecedor), g in base_top.groupby(
+        ["_pedido", "_departamento", "_fornecedor"], dropna=False
+    ):
+        produtos = [x for x in g["_cod_prod"].astype(str).str.strip().tolist() if x and x.lower() != "nan"]
+        produtos_distintos = list(dict.fromkeys(produtos))
+        saldo_pedido = float(g["_saldo_cmv"].sum())
+        rank = int(g["ranking_departamento"].iloc[0])
+
+        itens = []
+        for _, r in g.iterrows():
+            item = {
+                "codigo": str(r.get("_cod_prod", "") or "").strip(),
+                "saldo_cmv": float(r.get("_saldo_cmv", 0) or 0),
+            }
+            if cols.get("descricao"):
+                item["descricao"] = str(r.get(cols["descricao"], "") or "").strip()
+            itens.append(item)
+
+        doc_id = hash_id("RUPTURA", pedido, departamento, fornecedor)
+        linhas.append({
+            "doc_id": doc_id,
+            "pedido": str(pedido),
+            "analista": identificar_analista(departamento),
+            "departamento": str(departamento),
+            "departamento_norm": norm(departamento),
+            "fornecedor": str(fornecedor),
+            "qtd_produtos": len(produtos_distintos),
+            "saldo_cmv": saldo_pedido,
+            "ranking_departamento": rank,
+            "data_ultimo_upload": agora,
+            "criado_em": agora,
+            "atualizado_em": agora,
+            "itens_json": json.dumps(itens, ensure_ascii=False),
+        })
+
+    if not linhas:
+        st.warning("O arquivo não gerou pedidos para a Carteira Ruptura.")
+        return False
+
+    upsert = text("""
+        insert into carteira_ruptura_pedidos (
+            doc_id, pedido, analista, departamento, departamento_norm, fornecedor,
+            qtd_produtos, saldo_cmv, ranking_departamento,
+            status_cobranca, cobrancas, ultima_cobranca, ativo,
+            data_ultimo_upload, criado_em, atualizado_em, itens_json
+        ) values (
+            :doc_id, :pedido, :analista, :departamento, :departamento_norm, :fornecedor,
+            :qtd_produtos, :saldo_cmv, :ranking_departamento,
+            'PENDENTE', 0, '', true,
+            :data_ultimo_upload, :criado_em, :atualizado_em, :itens_json
+        )
+        on conflict (doc_id) do update set
+            pedido = excluded.pedido,
+            analista = excluded.analista,
+            departamento = excluded.departamento,
+            departamento_norm = excluded.departamento_norm,
+            fornecedor = excluded.fornecedor,
+            qtd_produtos = excluded.qtd_produtos,
+            saldo_cmv = excluded.saldo_cmv,
+            ranking_departamento = excluded.ranking_departamento,
+            ativo = true,
+            data_ultimo_upload = excluded.data_ultimo_upload,
+            atualizado_em = excluded.atualizado_em,
+            itens_json = excluded.itens_json
+    """)
+
+    ids_novos = [x["doc_id"] for x in linhas]
+
+    try:
+        with engine.begin() as conn:
+            # Desativa o que não pertence mais ao TOP 5 do upload atual.
+            conn.execute(text("update carteira_ruptura_pedidos set ativo = false, atualizado_em = :agora"), {"agora": agora})
+            conn.execute(upsert, linhas)
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        st.success(f"Carteira Ruptura atualizada: {len(linhas)} pedido(s) dos TOP 5 fornecedores de cada departamento.")
+        st.caption(f"Origem: {origem}")
+        return True
+    except Exception as e:
+        st.error("Erro ao salvar a Carteira Ruptura no Neon.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
+
+
+def buscar_carteira_ruptura(analista=None):
+    sql = """
+        select doc_id, pedido, analista, departamento, fornecedor,
+               qtd_produtos, saldo_cmv, ranking_departamento,
+               status_cobranca, cobrancas, ultima_cobranca,
+               data_ultimo_upload, itens_json
+        from carteira_ruptura_pedidos
+        where ativo = true
+    """
+    params = {}
+    if analista:
+        sql += " and analista = :analista"
+        params["analista"] = analista
+    sql += " order by departamento, ranking_departamento, fornecedor, pedido"
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+        return pd.DataFrame([dict(r) for r in rows])
+    except Exception as e:
+        st.error("Erro ao consultar a Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return pd.DataFrame()
+
+
+def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        st.warning("Selecione pelo menos um pedido da Carteira Ruptura.")
+        return
+
+    sql_sel = text("""
+        select doc_id, pedido, cobrancas
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            itens = conn.execute(sql_sel, {"ids": ids}).mappings().all()
+            agora = agora_str()
+            updates = []
+            hist = []
+            for item in itens:
+                atual = int(item.get("cobrancas") or 0)
+                nova = min(atual + 1, 3)
+                status = status_por_cobranca(nova, False)
+                updates.append({
+                    "doc_id": item["doc_id"], "cobrancas": nova,
+                    "status": status, "ultima": agora, "atualizado": agora,
+                })
+                hist.append({
+                    "doc_id": item["doc_id"], "pedido": item.get("pedido", ""),
+                    "tipo": "COBRANCA", "data": agora, "usuario": usuario,
+                    "observacao": observacao or "", "cobranca_numero": nova,
+                    "status_apos": status,
+                })
+
+            if updates:
+                conn.execute(text("""
+                    update carteira_ruptura_pedidos
+                    set cobrancas=:cobrancas, status_cobranca=:status,
+                        ultima_cobranca=:ultima, atualizado_em=:atualizado
+                    where doc_id=:doc_id
+                """), updates)
+                conn.execute(text("""
+                    insert into carteira_ruptura_historico
+                    (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                    values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+                """), hist)
+
+        st.success(f"Cobrança registrada para {len(updates)} pedido(s) da Ruptura.")
+        st.rerun()
+    except Exception as e:
+        st.error("Erro ao registrar cobrança da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+
+
+def tela_upload_ruptura():
+    st.header("Atualizar Carteira Ruptura")
+    st.caption("Somente STATUS = RUPTURA. TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata.")
+
+    arquivo = st.file_uploader(
+        "Arquivo da Carteira Ruptura",
+        type=["xlsx", "xls", "csv"],
+        key="upload_carteira_ruptura",
+    )
+    if not arquivo:
+        st.info("Envie a nova base para atualizar somente a Carteira Ruptura.")
+        return
+
+    df = ler_arquivo(arquivo)
+    base_top, top5, cols, faltando = preparar_ruptura(df)
+
+    if faltando:
+        st.error("Colunas obrigatórias não encontradas: " + ", ".join(faltando))
+        st.write("Mapeamento identificado:", cols)
+        return
+
+    if top5.empty:
+        st.warning("Nenhum registro com STATUS = RUPTURA foi encontrado.")
+        return
+
+    st.subheader("Prévia do TOP 5 por departamento")
+    previa = top5.rename(columns={
+        "_departamento": "Departamento",
+        "_fornecedor": "Fornecedor",
+        "qtd_produtos": "Qtd Produtos",
+        "saldo_cmv": "Saldo CMV",
+        "ranking_departamento": "Ranking",
+    })[["Departamento", "Ranking", "Fornecedor", "Qtd Produtos", "Saldo CMV"]]
+    previa["Saldo CMV"] = previa["Saldo CMV"].apply(formatar_moeda)
+    st.dataframe(previa, use_container_width=True, hide_index=True, height=420)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Departamentos", int(top5["_departamento"].nunique()))
+    c2.metric("Fornecedores selecionados", int(len(top5)))
+    c3.metric("Linhas de produtos selecionadas", int(len(base_top)))
+
+    if st.button("Atualizar Carteira Ruptura", type="primary", use_container_width=True):
+        salvar_carteira_ruptura(df, f"upload manual - {arquivo.name}")
+
+
+def tela_carteira_ruptura(analista=None):
+    st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
+    st.caption("TOP 5 fornecedores de cada departamento por quantidade de produtos em RUPTURA.")
+
+    df = buscar_carteira_ruptura(analista)
+    if df.empty:
+        st.info("Nenhum pedido ativo na Carteira Ruptura. Atualize a base primeiro.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Pedidos", int(df["pedido"].nunique()))
+    c2.metric("Fornecedores TOP 5", int(df[["departamento", "fornecedor"]].drop_duplicates().shape[0]))
+    c3.metric("Produtos", int(pd.to_numeric(df["qtd_produtos"], errors="coerce").fillna(0).sum()))
+    c4.metric("Saldo CMV", formatar_moeda(pd.to_numeric(df["saldo_cmv"], errors="coerce").fillna(0).sum()))
+
+    cols = st.columns([1.2, 1.5, 2.2, 1.3])
+    with cols[0]:
+        deps = ["TODOS"] + sorted(df["departamento"].dropna().astype(str).unique().tolist())
+        dep = st.selectbox("Departamento", deps, key=f"rupt_dep_{analista or 'admin'}")
+    dff = df if dep == "TODOS" else df[df["departamento"] == dep]
+
+    with cols[1]:
+        ranks = ["TODOS"] + [str(x) for x in sorted(pd.to_numeric(dff["ranking_departamento"], errors="coerce").dropna().astype(int).unique())]
+        rank = st.selectbox("Ranking", ranks, key=f"rupt_rank_{analista or 'admin'}")
+    if rank != "TODOS":
+        dff = dff[pd.to_numeric(dff["ranking_departamento"], errors="coerce") == int(rank)]
+
+    with cols[2]:
+        fornecedores = ["TODOS"] + sorted(dff["fornecedor"].dropna().astype(str).unique().tolist())
+        forn = st.selectbox("Fornecedor", fornecedores, key=f"rupt_forn_{analista or 'admin'}")
+    if forn != "TODOS":
+        dff = dff[dff["fornecedor"] == forn]
+
+    with cols[3]:
+        busca = st.text_input("Pesquisar pedido", key=f"rupt_pedido_{analista or 'admin'}")
+    if busca.strip():
+        dff = dff[dff["pedido"].astype(str).str.contains(busca.strip(), case=False, na=False)]
+
+    exib = dff[[
+        "doc_id", "analista", "departamento", "ranking_departamento", "fornecedor",
+        "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca", "cobrancas", "ultima_cobranca"
+    ]].copy()
+    exib["Selecionar"] = False
+    exib["saldo_cmv"] = exib["saldo_cmv"].apply(formatar_moeda)
+    exib = exib.rename(columns={
+        "analista": "Analista", "departamento": "Departamento",
+        "ranking_departamento": "Top", "fornecedor": "Fornecedor",
+        "pedido": "Pedido", "qtd_produtos": "Qtd Produtos",
+        "saldo_cmv": "Saldo CMV", "status_cobranca": "Status",
+        "cobrancas": "Cobranças", "ultima_cobranca": "Última Cobrança",
+    })
+
+    edit = st.data_editor(
+        exib[["Selecionar", "doc_id", "Analista", "Departamento", "Top", "Fornecedor", "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças", "Última Cobrança"]],
+        use_container_width=True,
+        hide_index=True,
+        disabled=["doc_id", "Analista", "Departamento", "Top", "Fornecedor", "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças", "Última Cobrança"],
+        column_config={"doc_id": None},
+        key=f"ruptura_editor_{analista or 'admin'}",
+    )
+
+    selecionados = edit.loc[edit["Selecionar"] == True, "doc_id"].tolist()
+    obs = st.text_input("Observação da cobrança", key=f"rupt_obs_{analista or 'admin'}")
+    if st.button(
+        f"Registrar cobrança ({len(selecionados)})",
+        type="primary",
+        disabled=not selecionados,
+        use_container_width=True,
+        key=f"rupt_btn_cobrar_{analista or 'admin'}",
+    ):
+        registrar_cobranca_ruptura(selecionados, usuario_logado, obs)
+
+
 # =========================
 # ROTEAMENTO
 # =========================
@@ -4975,7 +5414,7 @@ st.caption("Controle de pedidos atrasados.")
 if usuario_logado == "Admin":
     pagina = st.radio(
         "Menu",
-        ["Atualizar", "Carteira Geral", "Análise Atrasos", "Exportar Comprador", "Senhas", "Limpeza", "Regras"],
+        ["Atualizar", "Carteira Geral", "Carteira Ruptura", "Atualizar Carteira Ruptura", "Análise Atrasos", "Exportar Comprador", "Senhas", "Limpeza", "Regras"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -4985,6 +5424,12 @@ if usuario_logado == "Admin":
 
     elif pagina == "Carteira Geral":
         tela_carteira()
+
+    elif pagina == "Carteira Ruptura":
+        tela_carteira_ruptura()
+
+    elif pagina == "Atualizar Carteira Ruptura":
+        tela_upload_ruptura()
 
     elif pagina == "Análise Atrasos":
         tela_analise_atrasos()
