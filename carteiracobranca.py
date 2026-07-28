@@ -4998,6 +4998,9 @@ def inicializar_banco_ruptura():
         itens_json text default '[]'
     );
 
+    alter table carteira_ruptura_pedidos
+    add column if not exists comprador_acionado boolean default false;
+
     create table if not exists carteira_ruptura_historico (
         id bigserial primary key,
         doc_id text references carteira_ruptura_pedidos(doc_id) on delete cascade,
@@ -5043,7 +5046,7 @@ def mapear_colunas_ruptura(df):
         "saldo_cmv": _col_ruptura(df, ["Saldo R$ (CMV)", "Saldo S (CMV)", "Saldo CMV", "Saldo R$", "Saldo Valor"]) or encontrar_coluna_valor_cmv(df, "saldo"),
         "descricao": _col_ruptura(df, ["Desc_Prod", "Desc Prod", "Descrição", "Descricao", "Produto", "Desc Produto"]),
     }
-    obrig = ["status", "departamento", "fornecedor", "cod_prod", "pedido", "saldo_cmv"]
+    obrig = ["departamento", "fornecedor", "cod_prod", "pedido", "saldo_cmv"]
     faltando = [x for x in obrig if not cols.get(x)]
     return cols, faltando
 
@@ -5111,7 +5114,7 @@ def salvar_carteira_ruptura(df, origem="upload manual"):
         return False
 
     if base_top.empty:
-        st.warning("Nenhuma linha com STATUS = RUPTURA foi encontrada no arquivo.")
+        st.warning("Nenhuma linha válida foi encontrada no arquivo da Carteira Ruptura.")
         return False
 
     agora = agora_str()
@@ -5211,7 +5214,7 @@ def buscar_carteira_ruptura(analista=None):
     sql = """
         select doc_id, pedido, analista, departamento, fornecedor,
                qtd_produtos, saldo_cmv, ranking_departamento,
-               status_cobranca, cobrancas, ultima_cobranca,
+               status_cobranca, cobrancas, comprador_acionado, ultima_cobranca,
                data_ultimo_upload, itens_json
         from carteira_ruptura_pedidos
         where ativo = true
@@ -5233,63 +5236,537 @@ def buscar_carteira_ruptura(analista=None):
         return pd.DataFrame()
 
 
+def buscar_retorno_cobranca_ruptura_por_numero(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id, cobranca_numero)
+            doc_id, cobranca_numero, observacao, data
+        from carteira_ruptura_historico
+        where doc_id in :ids
+          and tipo = 'RETORNO_COBRANCA'
+          and cobranca_numero is not null
+        order by doc_id, cobranca_numero, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        mapa = {}
+        for r in rows:
+            doc_id = r["doc_id"]
+            numero = int(r.get("cobranca_numero") or 0)
+            mapa.setdefault(doc_id, {})[numero] = {
+                "observacao": r.get("observacao", "") or "",
+                "data": r.get("data", "") or "",
+            }
+        return mapa
+    except Exception as e:
+        st.error("Erro ao buscar retornos da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return {}
+
+
+def tem_retorno_cobranca_ruptura(retornos_por_doc, doc_id, cobranca_numero):
+    try:
+        numero = int(cobranca_numero or 0)
+    except Exception:
+        numero = 0
+
+    if numero <= 0:
+        return True
+
+    retorno = retornos_por_doc.get(doc_id, {}).get(numero)
+    return bool(retorno and str(retorno.get("observacao", "")).strip())
+
+
+def texto_retorno_ruptura(linha, retornos_por_doc):
+    doc_id = linha.get("doc_id", "")
+    try:
+        numero = int(linha.get("cobrancas", 0) or 0)
+    except Exception:
+        numero = 0
+
+    if numero <= 0:
+        return ""
+
+    retorno = retornos_por_doc.get(doc_id, {}).get(numero)
+    if not retorno:
+        return "PENDENTE"
+
+    obs = str(retorno.get("observacao", "") or "").strip()
+    return obs if obs else "PENDENTE"
+
+
 def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
     if not ids:
         st.warning("Selecione pelo menos um pedido da Carteira Ruptura.")
-        return
+        return False
 
     sql_sel = text("""
-        select doc_id, pedido, cobrancas
+        select doc_id, pedido, cobrancas, comprador_acionado
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    retornos = buscar_retorno_cobranca_ruptura_por_numero(ids)
+    agora = agora_str()
+    updates = []
+    historicos = []
+    bloqueados_retorno = []
+    bloqueados_limite = []
+
+    try:
+        with engine.begin() as conn:
+            itens = conn.execute(sql_sel, {"ids": ids}).mappings().all()
+
+        for item in itens:
+            doc_id = item["doc_id"]
+            atual = int(item.get("cobrancas") or 0)
+
+            if atual >= 3:
+                bloqueados_limite.append(item.get("pedido", doc_id))
+                continue
+
+            if atual > 0 and not tem_retorno_cobranca_ruptura(retornos, doc_id, atual):
+                bloqueados_retorno.append(item.get("pedido", doc_id))
+                continue
+
+            nova = atual + 1
+            comprador_acionado = bool(item.get("comprador_acionado", False))
+            novo_status = status_por_cobranca(nova, comprador_acionado)
+
+            updates.append({
+                "doc_id": doc_id,
+                "cobrancas": nova,
+                "status": novo_status,
+                "ultima": agora,
+                "atualizado": agora,
+            })
+            historicos.append({
+                "doc_id": doc_id,
+                "pedido": item.get("pedido", ""),
+                "tipo": "COBRANCA",
+                "data": agora,
+                "usuario": usuario,
+                "observacao": observacao or "",
+                "cobranca_numero": nova,
+                "status_apos": novo_status,
+            })
+
+        if bloqueados_retorno:
+            st.warning(
+                "Antes da próxima cobrança, informe o retorno da última cobrança "
+                "ou marque NÃO HOUVE RETORNO. Pedidos bloqueados: "
+                + ", ".join(str(x) for x in bloqueados_retorno[:20])
+            )
+
+        if bloqueados_limite:
+            st.warning(
+                "Alguns pedidos já possuem 3 cobranças: "
+                + ", ".join(str(x) for x in bloqueados_limite[:20])
+            )
+
+        if not updates:
+            return False
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                update carteira_ruptura_pedidos
+                set cobrancas=:cobrancas,
+                    status_cobranca=:status,
+                    ultima_cobranca=:ultima,
+                    atualizado_em=:atualizado
+                where doc_id=:doc_id
+            """), updates)
+
+            conn.execute(text("""
+                insert into carteira_ruptura_historico
+                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+            """), historicos)
+
+        st.success(f"Cobrança registrada para {len(updates)} pedido(s) da Ruptura.")
+        return True
+
+    except Exception as e:
+        st.error("Erro ao registrar cobrança da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
+
+
+def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return False
+
+    retorno_opcao = str(retorno_opcao or "").strip().upper()
+    observacao = str(observacao or "").strip()
+
+    if retorno_opcao not in ["HOUVE RETORNO", "NÃO HOUVE RETORNO"]:
+        st.warning("Selecione o retorno da cobrança.")
+        return False
+
+    if retorno_opcao == "HOUVE RETORNO" and not observacao:
+        st.warning("Quando houve retorno, descreva o retorno recebido.")
+        return False
+
+    obs_final = "NÃO HOUVE RETORNO" if retorno_opcao == "NÃO HOUVE RETORNO" else observacao
+
+    sql = text("""
+        select doc_id, pedido, cobrancas, status_cobranca
         from carteira_ruptura_pedidos
         where doc_id in :ids and ativo = true
     """).bindparams(bindparam("ids", expanding=True))
 
     try:
         with engine.begin() as conn:
-            itens = conn.execute(sql_sel, {"ids": ids}).mappings().all()
-            agora = agora_str()
-            updates = []
-            hist = []
-            for item in itens:
-                atual = int(item.get("cobrancas") or 0)
-                nova = min(atual + 1, 3)
-                status = status_por_cobranca(nova, False)
-                updates.append({
-                    "doc_id": item["doc_id"], "cobrancas": nova,
-                    "status": status, "ultima": agora, "atualizado": agora,
-                })
-                hist.append({
-                    "doc_id": item["doc_id"], "pedido": item.get("pedido", ""),
-                    "tipo": "COBRANCA", "data": agora, "usuario": usuario,
-                    "observacao": observacao or "", "cobranca_numero": nova,
-                    "status_apos": status,
-                })
+            itens = conn.execute(sql, {"ids": ids}).mappings().all()
 
-            if updates:
-                conn.execute(text("""
-                    update carteira_ruptura_pedidos
-                    set cobrancas=:cobrancas, status_cobranca=:status,
-                        ultima_cobranca=:ultima, atualizado_em=:atualizado
-                    where doc_id=:doc_id
-                """), updates)
-                conn.execute(text("""
-                    insert into carteira_ruptura_historico
-                    (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
-                    values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
-                """), hist)
+        agora = agora_str()
+        historicos = []
 
-        st.success(f"Cobrança registrada para {len(updates)} pedido(s) da Ruptura.")
-        st.rerun()
+        for item in itens:
+            cobrancas = int(item.get("cobrancas") or 0)
+            if cobrancas <= 0:
+                continue
+
+            historicos.append({
+                "doc_id": item["doc_id"],
+                "pedido": item.get("pedido", ""),
+                "tipo": "RETORNO_COBRANCA",
+                "data": agora,
+                "usuario": usuario,
+                "observacao": obs_final,
+                "cobranca_numero": cobrancas,
+                "status_apos": item.get("status_cobranca", ""),
+            })
+
+        if not historicos:
+            st.warning("Nenhum pedido selecionado possui cobrança para receber retorno.")
+            return False
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                insert into carteira_ruptura_historico
+                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+            """), historicos)
+
+        return True
     except Exception as e:
-        st.error("Erro ao registrar cobrança da Carteira Ruptura.")
+        st.error("Erro ao registrar retorno da Carteira Ruptura.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
+        return False
+
+
+def buscar_datas_cobrancas_ruptura(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id, cobranca_numero)
+            doc_id, cobranca_numero, data
+        from carteira_ruptura_historico
+        where doc_id in :ids
+          and tipo = 'COBRANCA'
+          and cobranca_numero is not null
+        order by doc_id, cobranca_numero, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        mapa = {}
+        for r in rows:
+            mapa.setdefault(r["doc_id"], {})[int(r.get("cobranca_numero") or 0)] = r.get("data", "") or ""
+        return mapa
+    except Exception:
+        return {}
+
+
+def excluir_cobranca_ruptura_lote(doc_ids, usuario, observacao, cobranca_numero):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return False
+
+    try:
+        numero = int(cobranca_numero)
+    except Exception:
+        st.warning("Selecione qual cobrança deseja excluir.")
+        return False
+
+    sql = text("""
+        select doc_id, pedido, cobrancas
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    datas = buscar_datas_cobrancas_ruptura(ids)
+    agora = agora_str()
+    updates = []
+    historicos = []
+
+    try:
+        with engine.begin() as conn:
+            itens = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        for item in itens:
+            atual = int(item.get("cobrancas") or 0)
+            if atual < numero:
+                continue
+
+            nova_qtd = max(numero - 1, 0)
+            novo_status = status_por_cobranca(nova_qtd, False)
+            nova_ultima = datas.get(item["doc_id"], {}).get(nova_qtd, "") if nova_qtd > 0 else ""
+
+            updates.append({
+                "doc_id": item["doc_id"],
+                "cobrancas": nova_qtd,
+                "status": novo_status,
+                "ultima": nova_ultima,
+                "atualizado": agora,
+            })
+            historicos.append({
+                "doc_id": item["doc_id"],
+                "pedido": item.get("pedido", ""),
+                "tipo": "EXCLUSAO_COBRANCA",
+                "data": agora,
+                "usuario": usuario,
+                "observacao": observacao or f"Exclusão da {numero}ª cobrança.",
+                "cobranca_numero": numero,
+                "status_apos": novo_status,
+            })
+
+        if not updates:
+            st.warning(f"Nenhum pedido tinha {numero} cobrança(s) para excluir.")
+            return False
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                update carteira_ruptura_pedidos
+                set cobrancas=:cobrancas,
+                    status_cobranca=:status,
+                    comprador_acionado=false,
+                    ultima_cobranca=:ultima,
+                    atualizado_em=:atualizado
+                where doc_id=:doc_id
+            """), updates)
+
+            conn.execute(text("""
+                insert into carteira_ruptura_historico
+                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+            """), historicos)
+
+        return True
+    except Exception as e:
+        st.error("Erro ao excluir cobrança da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
+
+
+def sinalizar_comprador_ruptura_lote(doc_ids, usuario, observacao=""):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return False
+
+    sql = text("""
+        select doc_id, pedido, cobrancas, status_cobranca
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    agora = agora_str()
+    updates = []
+    historicos = []
+
+    try:
+        with engine.begin() as conn:
+            itens = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        for item in itens:
+            cobrancas = int(item.get("cobrancas") or 0)
+            if cobrancas < 3:
+                continue
+
+            updates.append({"doc_id": item["doc_id"], "atualizado": agora})
+            historicos.append({
+                "doc_id": item["doc_id"],
+                "pedido": item.get("pedido", ""),
+                "tipo": "NECESSARIO_ACIONAR_COMPRADOR",
+                "data": agora,
+                "usuario": usuario,
+                "observacao": observacao or "Após 3 cobranças, necessário acionar comprador.",
+                "cobranca_numero": cobrancas,
+                "status_apos": STATUS_ACIONAR_COMPRADOR,
+            })
+
+        if not updates:
+            st.warning("Nenhum pedido selecionado possui 3 cobranças.")
+            return False
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                update carteira_ruptura_pedidos
+                set status_cobranca=:status,
+                    atualizado_em=:atualizado
+                where doc_id=:doc_id
+            """), [
+                {"doc_id": u["doc_id"], "status": STATUS_ACIONAR_COMPRADOR, "atualizado": u["atualizado"]}
+                for u in updates
+            ])
+            conn.execute(text("""
+                insert into carteira_ruptura_historico
+                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+            """), historicos)
+
+        return True
+    except Exception as e:
+        st.error("Erro ao sinalizar comprador na Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
+
+
+def marcar_comprador_acionado_ruptura_lote(doc_ids, usuario, observacao=""):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        st.warning("Selecione pelo menos um pedido.")
+        return False
+
+    sql = text("""
+        select doc_id, pedido
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    agora = agora_str()
+
+    try:
+        with engine.begin() as conn:
+            itens = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        if not itens:
+            return False
+
+        updates = [{"doc_id": i["doc_id"], "atualizado": agora} for i in itens]
+        historicos = [{
+            "doc_id": i["doc_id"],
+            "pedido": i.get("pedido", ""),
+            "tipo": "COMPRADOR_ACIONADO",
+            "data": agora,
+            "usuario": usuario,
+            "observacao": observacao or "",
+            "cobranca_numero": None,
+            "status_apos": STATUS_COMPRADOR_ACIONADO,
+        } for i in itens]
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                update carteira_ruptura_pedidos
+                set comprador_acionado=true,
+                    status_cobranca=:status,
+                    atualizado_em=:atualizado
+                where doc_id=:doc_id
+            """), [
+                {"doc_id": u["doc_id"], "status": STATUS_COMPRADOR_ACIONADO, "atualizado": u["atualizado"]}
+                for u in updates
+            ])
+            conn.execute(text("""
+                insert into carteira_ruptura_historico
+                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+            """), historicos)
+
+        return True
+    except Exception as e:
+        st.error("Erro ao marcar comprador acionado na Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
+
+
+def historico_ruptura_doc(doc_id):
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(text("""
+                select tipo, data, usuario, observacao, cobranca_numero, status_apos
+                from carteira_ruptura_historico
+                where doc_id = :doc_id
+                order by data asc, id asc
+            """), {"doc_id": doc_id}).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        st.error("Erro ao carregar histórico da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return []
+
+
+def gerar_excel_ruptura_filtrada(df):
+    export = df.copy()
+
+    colunas = [
+        "analista", "departamento", "ranking_departamento", "fornecedor",
+        "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca",
+        "cobrancas", "ultima_cobranca"
+    ]
+    colunas = [c for c in colunas if c in export.columns]
+    export = export[colunas].rename(columns={
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "ranking_departamento": "Top",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "qtd_produtos": "Qtd Produtos",
+        "saldo_cmv": "Saldo CMV",
+        "status_cobranca": "Status",
+        "cobrancas": "Cobranças",
+        "ultima_cobranca": "Última Cobrança",
+    })
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        export.to_excel(writer, index=False, sheet_name="Carteira Ruptura")
+        ws = writer.book["Carteira Ruptura"]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+        larguras = {
+            "A": 16, "B": 24, "C": 8, "D": 34, "E": 16,
+            "F": 14, "G": 16, "H": 22, "I": 12, "J": 20,
+        }
+        for col, largura in larguras.items():
+            ws.column_dimensions[col].width = largura
+
+        if "Saldo CMV" in export.columns:
+            idx = export.columns.get_loc("Saldo CMV") + 1
+            for row in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
+                row[0].number_format = '#,##0.00'
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
-    st.caption("Somente STATUS = RUPTURA. TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata.")
+    st.caption("TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
@@ -5328,7 +5805,7 @@ def tela_upload_ruptura():
         return
 
     if top5.empty:
-        st.warning("Nenhum registro com STATUS = RUPTURA foi encontrado.")
+        st.warning("Nenhum registro válido foi encontrado na base da Carteira Ruptura.")
         return
 
     st.subheader("Prévia do TOP 5 por departamento")
@@ -5361,29 +5838,46 @@ def tela_carteira_ruptura(analista=None):
         return
 
     cols = st.columns([1.2, 1.5, 2.2, 1.3])
+
     with cols[0]:
         deps = ["TODOS"] + sorted(df["departamento"].dropna().astype(str).unique().tolist())
         dep = st.selectbox("Departamento", deps, key=f"rupt_dep_{analista or 'admin'}")
+
     dff = df if dep == "TODOS" else df[df["departamento"] == dep]
 
     with cols[1]:
-        ranks = ["TODOS"] + [str(x) for x in sorted(pd.to_numeric(dff["ranking_departamento"], errors="coerce").dropna().astype(int).unique())]
+        ranks = ["TODOS"] + [
+            str(x)
+            for x in sorted(
+                pd.to_numeric(dff["ranking_departamento"], errors="coerce")
+                .dropna().astype(int).unique()
+            )
+        ]
         rank = st.selectbox("Ranking", ranks, key=f"rupt_rank_{analista or 'admin'}")
+
     if rank != "TODOS":
-        dff = dff[pd.to_numeric(dff["ranking_departamento"], errors="coerce") == int(rank)]
+        dff = dff[
+            pd.to_numeric(dff["ranking_departamento"], errors="coerce") == int(rank)
+        ]
 
     with cols[2]:
-        fornecedores = ["TODOS"] + sorted(dff["fornecedor"].dropna().astype(str).unique().tolist())
+        fornecedores = ["TODOS"] + sorted(
+            dff["fornecedor"].dropna().astype(str).unique().tolist()
+        )
         forn = st.selectbox("Fornecedor", fornecedores, key=f"rupt_forn_{analista or 'admin'}")
+
     if forn != "TODOS":
         dff = dff[dff["fornecedor"] == forn]
 
     with cols[3]:
         busca = st.text_input("Pesquisar pedido", key=f"rupt_pedido_{analista or 'admin'}")
-    if busca.strip():
-        dff = dff[dff["pedido"].astype(str).str.contains(busca.strip(), case=False, na=False)]
 
-    # Cards sempre refletem exatamente o conjunto filtrado na tela.
+    if busca.strip():
+        dff = dff[
+            dff["pedido"].astype(str).str.contains(busca.strip(), case=False, na=False)
+        ]
+
+    # Cards refletem os filtros.
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pedidos", int(dff["pedido"].nunique()))
     c2.metric(
@@ -5401,39 +5895,292 @@ def tela_carteira_ruptura(analista=None):
         )
     )
 
+    # Excel da mesma tabela filtrada exibida na tela.
+    excel_bytes = gerar_excel_ruptura_filtrada(dff)
+    st.download_button(
+        "Baixar carteira filtrada em Excel",
+        data=excel_bytes,
+        file_name=f"carteira_ruptura_{hoje().strftime('%Y-%m-%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"download_ruptura_{analista or 'admin'}",
+    )
+
+    retornos = buscar_retorno_cobranca_ruptura_por_numero(
+        dff["doc_id"].dropna().tolist()
+    )
+    dff = dff.copy()
+    dff["retorno_ultima_cobranca"] = dff.apply(
+        lambda linha: texto_retorno_ruptura(linha, retornos),
+        axis=1
+    )
+
     exib = dff[[
         "doc_id", "analista", "departamento", "ranking_departamento", "fornecedor",
-        "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca", "cobrancas", "ultima_cobranca"
+        "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca", "cobrancas",
+        "retorno_ultima_cobranca", "ultima_cobranca"
     ]].copy()
+
     exib["Selecionar"] = False
     exib["saldo_cmv"] = exib["saldo_cmv"].apply(formatar_moeda)
+
     exib = exib.rename(columns={
-        "analista": "Analista", "departamento": "Departamento",
-        "ranking_departamento": "Top", "fornecedor": "Fornecedor",
-        "pedido": "Pedido", "qtd_produtos": "Qtd Produtos",
-        "saldo_cmv": "Saldo CMV", "status_cobranca": "Status",
-        "cobrancas": "Cobranças", "ultima_cobranca": "Última Cobrança",
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "ranking_departamento": "Top",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "qtd_produtos": "Qtd Produtos",
+        "saldo_cmv": "Saldo CMV",
+        "status_cobranca": "Status",
+        "cobrancas": "Cobranças",
+        "retorno_ultima_cobranca": "Último Retorno",
+        "ultima_cobranca": "Última Cobrança",
     })
 
     edit = st.data_editor(
-        exib[["Selecionar", "doc_id", "Analista", "Departamento", "Top", "Fornecedor", "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças", "Última Cobrança"]],
+        exib[[
+            "Selecionar", "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
+            "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
+            "Último Retorno", "Última Cobrança"
+        ]],
         use_container_width=True,
         hide_index=True,
-        disabled=["doc_id", "Analista", "Departamento", "Top", "Fornecedor", "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças", "Última Cobrança"],
+        disabled=[
+            "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
+            "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
+            "Último Retorno", "Última Cobrança"
+        ],
         column_config={"doc_id": None},
         key=f"ruptura_editor_{analista or 'admin'}",
     )
 
     selecionados = edit.loc[edit["Selecionar"] == True, "doc_id"].tolist()
-    obs = st.text_input("Observação da cobrança", key=f"rupt_obs_{analista or 'admin'}")
-    if st.button(
-        f"Registrar cobrança ({len(selecionados)})",
-        type="primary",
-        disabled=not selecionados,
+
+    if not selecionados:
+        st.info("Selecione um ou mais pedidos para registrar cobrança, retorno ou ação do comprador.")
+        return
+
+    df_acao = dff[dff["doc_id"].isin(selecionados)].copy()
+
+    st.markdown("### Ações dos pedidos selecionados")
+
+    df_resumo = df_acao[[
+        "analista", "departamento", "fornecedor", "pedido",
+        "status_cobranca", "cobrancas", "retorno_ultima_cobranca", "saldo_cmv"
+    ]].copy()
+
+    df_resumo = df_resumo.rename(columns={
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "status_cobranca": "Status",
+        "cobrancas": "Cobranças",
+        "retorno_ultima_cobranca": "Último Retorno",
+        "saldo_cmv": "Saldo CMV",
+    })
+
+    st.dataframe(
+        formatar_df_moeda(df_resumo),
         use_container_width=True,
-        key=f"rupt_btn_cobrar_{analista or 'admin'}",
-    ):
-        registrar_cobranca_ruptura(selecionados, usuario_logado, obs)
+        hide_index=True,
+        height=220
+    )
+
+    m1, m2 = st.columns(2)
+    m1.metric("Pedidos selecionados", len(df_acao))
+    m2.metric("Saldo CMV selecionado", formatar_moeda(df_acao["saldo_cmv"].sum()))
+
+    obs_cobranca = st.text_area(
+        "Observação da cobrança",
+        key=f"rupt_obs_{analista or 'admin'}",
+        placeholder="Ex.: fornecedor cobrado por e-mail/WhatsApp; pedido com previsão informada..."
+    )
+
+    df_pendente_retorno = df_acao[
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0)
+        & (df_acao["retorno_ultima_cobranca"].astype(str).str.upper() == "PENDENTE")
+    ].copy()
+
+    tem_retorno_pendente = not df_pendente_retorno.empty
+    tem_cobranca_para_retorno = bool(
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0).any()
+    )
+
+    if tem_cobranca_para_retorno:
+        st.markdown("### Retorno da última cobrança")
+
+        if tem_retorno_pendente:
+            st.warning(
+                "Para liberar a próxima cobrança, informe o retorno da última cobrança "
+                "ou marque como NÃO HOUVE RETORNO."
+            )
+        else:
+            st.success("Todos os pedidos selecionados com cobrança possuem retorno.")
+
+        retorno_opcao = st.selectbox(
+            "Retorno",
+            ["", "HOUVE RETORNO", "NÃO HOUVE RETORNO"],
+            key=f"rupt_retorno_opcao_{analista or 'admin'}"
+        )
+
+        obs_retorno = st.text_area(
+            "Detalhe do retorno",
+            key=f"rupt_obs_retorno_{analista or 'admin'}",
+            placeholder="Ex.: informou nova previsão, vai verificar, ou NÃO HOUVE RETORNO."
+        )
+
+        if st.button(
+            "Salvar retorno da última cobrança",
+            key=f"rupt_salvar_retorno_{analista or 'admin'}",
+            use_container_width=True,
+            disabled=(retorno_opcao == "")
+        ):
+            ids_retorno = df_acao[
+                pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0
+            ]["doc_id"].dropna().tolist()
+
+            if registrar_retorno_ruptura_lote(
+                ids_retorno, usuario_logado, retorno_opcao, obs_retorno
+            ):
+                st.success("Retorno registrado.")
+                st.rerun()
+
+    maior_cobranca = int(
+        pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0).max()
+    )
+
+    cobranca_excluir_numero = None
+    if maior_cobranca > 0:
+        opcoes = [
+            (1, "1ª cobrança"),
+            (2, "2ª cobrança"),
+            (3, "3ª cobrança"),
+        ]
+        opcoes = [x for x in opcoes if x[0] <= maior_cobranca]
+        mapa_excluir = {label: numero for numero, label in opcoes}
+
+        label_excluir = st.selectbox(
+            "Qual cobrança deseja excluir?",
+            list(mapa_excluir.keys()),
+            key=f"rupt_excluir_num_{analista or 'admin'}"
+        )
+        cobranca_excluir_numero = mapa_excluir[label_excluir]
+
+        st.caption(
+            f"Ao excluir a {label_excluir}, o pedido volta para "
+            f"{max(cobranca_excluir_numero - 1, 0)} cobrança(s)."
+        )
+
+    tem_menos_3 = bool(
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) < 3).any()
+    )
+    tem_3 = bool(
+        (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) >= 3).any()
+    )
+    tem_acionar = bool(
+        (df_acao["status_cobranca"] == STATUS_ACIONAR_COMPRADOR).any()
+    )
+    tem_excluir = maior_cobranca > 0
+
+    a1, a2, a3, a4 = st.columns(4)
+
+    with a1:
+        if st.button(
+            "Registrar cobrança",
+            use_container_width=True,
+            key=f"rupt_cobrar_{analista or 'admin'}",
+            disabled=(not tem_menos_3 or tem_retorno_pendente)
+        ):
+            ids_cobranca = df_acao[
+                pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) < 3
+            ]["doc_id"].dropna().tolist()
+
+            if registrar_cobranca_ruptura(ids_cobranca, usuario_logado, obs_cobranca):
+                st.rerun()
+
+    with a2:
+        if st.button(
+            "Necessário acionar comprador",
+            use_container_width=True,
+            key=f"rupt_acionar_{analista or 'admin'}",
+            disabled=(not tem_3 or tem_retorno_pendente)
+        ):
+            ids_acionar = df_acao[
+                pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) >= 3
+            ]["doc_id"].dropna().tolist()
+
+            if sinalizar_comprador_ruptura_lote(
+                ids_acionar, usuario_logado, obs_cobranca
+            ):
+                st.success("Pedidos sinalizados para acionar comprador.")
+                st.rerun()
+
+    with a3:
+        if st.button(
+            "Comprador acionado",
+            use_container_width=True,
+            key=f"rupt_comprador_acionado_{analista or 'admin'}",
+            disabled=not tem_acionar
+        ):
+            ids_acionado = df_acao[
+                df_acao["status_cobranca"] == STATUS_ACIONAR_COMPRADOR
+            ]["doc_id"].dropna().tolist()
+
+            if marcar_comprador_acionado_ruptura_lote(
+                ids_acionado, usuario_logado, obs_cobranca
+            ):
+                st.success("Comprador acionado registrado.")
+                st.rerun()
+
+    with a4:
+        if st.button(
+            "Excluir cobrança selecionada",
+            use_container_width=True,
+            key=f"rupt_excluir_{analista or 'admin'}",
+            disabled=(not tem_excluir or cobranca_excluir_numero is None)
+        ):
+            if excluir_cobranca_ruptura_lote(
+                selecionados, usuario_logado, obs_cobranca, cobranca_excluir_numero
+            ):
+                st.success("Cobrança excluída quando aplicável.")
+                st.rerun()
+
+    st.markdown("### Histórico do pedido")
+    opcoes_hist = (
+        df_acao["pedido"].astype(str)
+        + " | "
+        + df_acao["fornecedor"].astype(str)
+    ).tolist()
+
+    if opcoes_hist:
+        opcao_hist = st.selectbox(
+            "Selecione o pedido para ver o histórico",
+            opcoes_hist,
+            key=f"rupt_hist_sel_{analista or 'admin'}"
+        )
+
+        linha_hist = df_acao[
+            (df_acao["pedido"].astype(str) + " | " + df_acao["fornecedor"].astype(str))
+            == opcao_hist
+        ].iloc[0]
+
+        if st.button(
+            "Ver histórico do pedido",
+            use_container_width=True,
+            key=f"rupt_hist_btn_{analista or 'admin'}"
+        ):
+            hist = historico_ruptura_doc(linha_hist["doc_id"])
+            if not hist:
+                st.info("Esse pedido ainda não possui histórico.")
+            else:
+                st.dataframe(
+                    formatar_historico_pedido(hist),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=320
+                )
 
 
 # =========================
