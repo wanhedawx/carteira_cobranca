@@ -5054,11 +5054,8 @@ def preparar_ruptura(df):
         return pd.DataFrame(), pd.DataFrame(), cols, faltando
 
     base = df.copy()
-    base["_status"] = base[cols["status"]].apply(norm)
-    mascara_ruptura = base["_status"].astype(str).str.contains(
-        r"\bRUPTURA\b", regex=True, na=False
-    )
-    base = base[mascara_ruptura].copy()
+    # A planilha enviada para esta tela já contém somente a carteira de Ruptura.
+    # Portanto, todas as linhas válidas participam do ranking.
 
     if base.empty:
         return pd.DataFrame(), pd.DataFrame(), cols, []
