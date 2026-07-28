@@ -5077,11 +5077,22 @@ def preparar_ruptura(df):
     ].copy()
 
     # Ranking do fornecedor no departamento.
-    # Conta produtos distintos; se a mesma SKU aparecer repetida, conta uma vez.
+    # IMPORTANTE: replica a Tabela Dinâmica do Excel em "Contagem de Cod_Prod":
+    # conta cada linha não vazia de Cod_Prod, e NÃO somente produtos distintos.
+    # Assim, por exemplo, STAMACO pode ter 320 e TRAMONTINA 272 exatamente como no Excel.
     ranking = (
         base.groupby(["_departamento", "_fornecedor"], dropna=False)
         .agg(
-            qtd_produtos=("_cod_prod", lambda s: s[s.astype(str).str.strip() != ""].nunique()),
+            qtd_produtos=(
+                "_cod_prod",
+                lambda s: int(
+                    s.astype(str)
+                     .str.strip()
+                     .replace({"nan": "", "None": "", "NONE": ""})
+                     .ne("")
+                     .sum()
+                )
+            ),
             saldo_cmv=("_saldo_cmv", "sum"),
         )
         .reset_index()
@@ -5124,8 +5135,10 @@ def salvar_carteira_ruptura(df, origem="upload manual"):
     for (pedido, departamento, fornecedor), g in base_top.groupby(
         ["_pedido", "_departamento", "_fornecedor"], dropna=False
     ):
-        produtos = [x for x in g["_cod_prod"].astype(str).str.strip().tolist() if x and x.lower() != "nan"]
-        produtos_distintos = list(dict.fromkeys(produtos))
+        produtos = [
+            x for x in g["_cod_prod"].astype(str).str.strip().tolist()
+            if x and x.lower() not in ["nan", "none"]
+        ]
         saldo_pedido = float(g["_saldo_cmv"].sum())
         rank = int(g["ranking_departamento"].iloc[0])
 
@@ -5147,7 +5160,7 @@ def salvar_carteira_ruptura(df, origem="upload manual"):
             "departamento": str(departamento),
             "departamento_norm": norm(departamento),
             "fornecedor": str(fornecedor),
-            "qtd_produtos": len(produtos_distintos),
+            "qtd_produtos": len(produtos),
             "saldo_cmv": saldo_pedido,
             "ranking_departamento": rank,
             "data_ultimo_upload": agora,
@@ -5766,7 +5779,7 @@ def gerar_excel_ruptura_filtrada(df):
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
-    st.caption("TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata. A data do pedido não é usada nesta carteira.")
+    st.caption("TOP 5 fornecedores por departamento pela Contagem de Cod_Prod, igual à Tabela Dinâmica; maior Saldo CMV desempata. A data do pedido não é usada nesta carteira.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
@@ -5830,7 +5843,7 @@ def tela_upload_ruptura():
 
 def tela_carteira_ruptura(analista=None):
     st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
-    st.caption("TOP 5 fornecedores por departamento pela quantidade de produtos. Nesta carteira, a data do pedido não interfere na seleção.")
+    st.caption("TOP 5 fornecedores por departamento pela Contagem de Cod_Prod, igual à Tabela Dinâmica. A data do pedido não interfere na seleção.")
 
     df = buscar_carteira_ruptura(analista)
     if df.empty:
