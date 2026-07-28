@@ -5766,7 +5766,6 @@ def gerar_excel_ruptura_filtrada(df):
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
-    st.caption("TOP 5 fornecedores por departamento pela quantidade de Cod_Prod; maior Saldo CMV desempata.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
@@ -5830,7 +5829,7 @@ def tela_upload_ruptura():
 
 def tela_carteira_ruptura(analista=None):
     st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
-    st.caption("TOP 5 fornecedores de cada departamento por quantidade de produtos da base de Ruptura.")
+    st.caption("TOP 5 fornecedores de cada departamento.")
 
     df = buscar_carteira_ruptura(analista)
     if df.empty:
