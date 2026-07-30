@@ -5249,6 +5249,39 @@ def buscar_carteira_ruptura(analista=None):
         return pd.DataFrame()
 
 
+def buscar_obs_ultima_cobranca_ruptura(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (h.doc_id)
+            h.doc_id,
+            h.observacao
+        from carteira_ruptura_historico h
+        join carteira_ruptura_pedidos p
+          on p.doc_id = h.doc_id
+        where h.doc_id in :ids
+          and h.tipo = 'COBRANCA'
+          and h.cobranca_numero = p.cobrancas
+        order by h.doc_id, h.data desc, h.id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        return {
+            r["doc_id"]: (r.get("observacao", "") or "")
+            for r in rows
+        }
+    except Exception as e:
+        st.error("Erro ao buscar a observação da última cobrança da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return {}
+
+
 def buscar_retorno_cobranca_ruptura_por_numero(doc_ids):
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
     if not ids:
@@ -5737,7 +5770,7 @@ def gerar_excel_ruptura_filtrada(df):
     colunas = [
         "analista", "departamento", "ranking_departamento", "fornecedor",
         "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca",
-        "cobrancas", "ultima_cobranca"
+        "cobrancas", "obs_cobranca", "retorno_ultima_cobranca", "ultima_cobranca"
     ]
     colunas = [c for c in colunas if c in export.columns]
     export = export[colunas].rename(columns={
@@ -5750,6 +5783,8 @@ def gerar_excel_ruptura_filtrada(df):
         "saldo_cmv": "Saldo CMV",
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
+        "retorno_ultima_cobranca": "Último Retorno",
         "ultima_cobranca": "Última Cobrança",
     })
 
@@ -5779,6 +5814,7 @@ def gerar_excel_ruptura_filtrada(df):
 
 def tela_upload_ruptura():
     st.header("Atualizar Carteira Ruptura")
+    st.caption("TOP 5 fornecedores por departamento pela Contagem de Cod_Prod, igual à Tabela Dinâmica; maior Saldo CMV desempata. A data do pedido não é usada nesta carteira.")
 
     arquivo = st.file_uploader(
         "Arquivo da Carteira Ruptura",
@@ -5907,7 +5943,19 @@ def tela_carteira_ruptura(analista=None):
         )
     )
 
-    # Excel da mesma tabela filtrada exibida na tela.
+    doc_ids_tela = dff["doc_id"].dropna().tolist()
+
+    retornos = buscar_retorno_cobranca_ruptura_por_numero(doc_ids_tela)
+    obs_cobranca_por_doc = buscar_obs_ultima_cobranca_ruptura(doc_ids_tela)
+
+    dff = dff.copy()
+    dff["obs_cobranca"] = dff["doc_id"].map(obs_cobranca_por_doc).fillna("")
+    dff["retorno_ultima_cobranca"] = dff.apply(
+        lambda linha: texto_retorno_ruptura(linha, retornos),
+        axis=1
+    )
+
+    # Excel da mesma tabela filtrada, incluindo cobrança e retorno.
     excel_bytes = gerar_excel_ruptura_filtrada(dff)
     st.download_button(
         "Baixar carteira filtrada em Excel",
@@ -5918,19 +5966,10 @@ def tela_carteira_ruptura(analista=None):
         key=f"download_ruptura_{analista or 'admin'}",
     )
 
-    retornos = buscar_retorno_cobranca_ruptura_por_numero(
-        dff["doc_id"].dropna().tolist()
-    )
-    dff = dff.copy()
-    dff["retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: texto_retorno_ruptura(linha, retornos),
-        axis=1
-    )
-
     exib = dff[[
         "doc_id", "analista", "departamento", "ranking_departamento", "fornecedor",
         "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca", "cobrancas",
-        "retorno_ultima_cobranca", "ultima_cobranca"
+        "obs_cobranca", "retorno_ultima_cobranca", "ultima_cobranca"
     ]].copy()
 
     exib["Selecionar"] = False
@@ -5946,6 +5985,7 @@ def tela_carteira_ruptura(analista=None):
         "saldo_cmv": "Saldo CMV",
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
         "retorno_ultima_cobranca": "Último Retorno",
         "ultima_cobranca": "Última Cobrança",
     })
@@ -5954,14 +5994,14 @@ def tela_carteira_ruptura(analista=None):
         exib[[
             "Selecionar", "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
             "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
-            "Último Retorno", "Última Cobrança"
+            "Obs Cobrança", "Último Retorno", "Última Cobrança"
         ]],
         use_container_width=True,
         hide_index=True,
         disabled=[
             "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
             "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
-            "Último Retorno", "Última Cobrança"
+            "Obs Cobrança", "Último Retorno", "Última Cobrança"
         ],
         column_config={"doc_id": None},
         key=f"ruptura_editor_{analista or 'admin'}",
@@ -5979,7 +6019,8 @@ def tela_carteira_ruptura(analista=None):
 
     df_resumo = df_acao[[
         "analista", "departamento", "fornecedor", "pedido",
-        "status_cobranca", "cobrancas", "retorno_ultima_cobranca", "saldo_cmv"
+        "status_cobranca", "cobrancas", "obs_cobranca",
+        "retorno_ultima_cobranca", "saldo_cmv"
     ]].copy()
 
     df_resumo = df_resumo.rename(columns={
@@ -5989,6 +6030,7 @@ def tela_carteira_ruptura(analista=None):
         "pedido": "Pedido",
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
         "retorno_ultima_cobranca": "Último Retorno",
         "saldo_cmv": "Saldo CMV",
     })
