@@ -75,6 +75,7 @@ RETORNOS_RUPTURA = [
     "DIVERGÊNCIA COMERCIAL",
     "CANCELADO",
     "REPROGRAMADO",
+    "OUTROS",
 ]
 
 COLUNAS_MOEDA = [
@@ -6015,7 +6016,102 @@ def tela_carteira_ruptura(analista=None):
             dff["pedido"].astype(str).str.contains(busca.strip(), case=False, na=False)
         ]
 
-    # Cards refletem os filtros.
+    # Carrega cobrança/retorno ANTES dos cards para permitir filtrar também
+    # por quantidade de cobranças e pelo motivo/retorno da última cobrança.
+    doc_ids_tela = dff["doc_id"].dropna().tolist()
+
+    retornos = buscar_retorno_cobranca_ruptura_por_numero(doc_ids_tela)
+    obs_cobranca_por_doc = buscar_obs_ultima_cobranca_ruptura(doc_ids_tela)
+
+    dff = dff.copy()
+    dff["obs_cobranca"] = dff["doc_id"].map(obs_cobranca_por_doc).fillna("")
+    dff["retorno_ultima_cobranca"] = dff.apply(
+        lambda linha: status_retorno_ruptura(linha, retornos),
+        axis=1
+    )
+    dff["obs_retorno_ultima_cobranca"] = dff.apply(
+        lambda linha: obs_retorno_ruptura(linha, retornos),
+        axis=1
+    )
+
+    # Filtros adicionais da cobrança/retorno.
+    # Ex.: Cobranças = 2 + Retorno = CANCELADO mostra somente esses pedidos
+    # e recalcula todos os cards/valores abaixo.
+    # As opções dos dois filtros são montadas antes de aplicar qualquer um deles,
+    # permitindo combinar livremente quantidade de cobranças + retorno.
+    dff_base_cobranca_retorno = dff.copy()
+    f1, f2 = st.columns(2)
+
+    with f1:
+        qtds_cobranca = sorted(
+            pd.to_numeric(dff_base_cobranca_retorno["cobrancas"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .unique()
+            .tolist()
+        )
+        mapa_cobrancas = {"TODAS": None}
+        for qtd in qtds_cobranca:
+            if qtd == 1:
+                label = "1 COBRANÇA"
+            else:
+                label = f"{qtd} COBRANÇAS"
+            mapa_cobrancas[label] = qtd
+
+        key_filtro_cobrancas = f"rupt_cobrancas_{analista or 'admin'}"
+        opcoes_cobrancas = list(mapa_cobrancas.keys())
+        if st.session_state.get(key_filtro_cobrancas) not in opcoes_cobrancas:
+            st.session_state[key_filtro_cobrancas] = "TODAS"
+
+        cobranca_label = st.selectbox(
+            "Cobranças",
+            opcoes_cobrancas,
+            key=key_filtro_cobrancas
+        )
+
+    with f2:
+        retornos_existentes = [
+            str(x).strip()
+            for x in dff_base_cobranca_retorno["retorno_ultima_cobranca"].dropna().unique().tolist()
+            if str(x).strip()
+        ]
+
+        # Mantém a ordem da lista padrão e acrescenta retornos antigos/legados
+        # que ainda existirem na base, como RETORNO ANTIGO ou PENDENTE.
+        opcoes_retorno = [
+            r for r in RETORNOS_RUPTURA
+            if r in retornos_existentes
+        ]
+        extras_retorno = sorted(
+            r for r in retornos_existentes
+            if r not in RETORNOS_RUPTURA
+        )
+        opcoes_retorno = ["TODOS"] + opcoes_retorno + extras_retorno
+
+        key_filtro_retorno = f"rupt_filtro_retorno_{analista or 'admin'}"
+        if st.session_state.get(key_filtro_retorno) not in opcoes_retorno:
+            st.session_state[key_filtro_retorno] = "TODOS"
+
+        retorno_filtro = st.selectbox(
+            "Retorno",
+            opcoes_retorno,
+            key=key_filtro_retorno
+        )
+
+    qtd_cobrancas_filtro = mapa_cobrancas[cobranca_label]
+    if qtd_cobrancas_filtro is not None:
+        dff = dff[
+            pd.to_numeric(dff["cobrancas"], errors="coerce")
+            .fillna(0)
+            .astype(int) == int(qtd_cobrancas_filtro)
+        ]
+
+    if retorno_filtro != "TODOS":
+        dff = dff[
+            dff["retorno_ultima_cobranca"].astype(str).str.strip() == retorno_filtro
+        ]
+
+    # Cards refletem TODOS os filtros, inclusive Cobranças + Retorno.
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pedidos", int(dff["pedido"].nunique()))
     c2.metric(
@@ -6031,22 +6127,6 @@ def tela_carteira_ruptura(analista=None):
         formatar_moeda(
             pd.to_numeric(dff["saldo_cmv"], errors="coerce").fillna(0).sum()
         )
-    )
-
-    doc_ids_tela = dff["doc_id"].dropna().tolist()
-
-    retornos = buscar_retorno_cobranca_ruptura_por_numero(doc_ids_tela)
-    obs_cobranca_por_doc = buscar_obs_ultima_cobranca_ruptura(doc_ids_tela)
-
-    dff = dff.copy()
-    dff["obs_cobranca"] = dff["doc_id"].map(obs_cobranca_por_doc).fillna("")
-    dff["retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: status_retorno_ruptura(linha, retornos),
-        axis=1
-    )
-    dff["obs_retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: obs_retorno_ruptura(linha, retornos),
-        axis=1
     )
 
     # Excel da mesma tabela filtrada, incluindo cobrança e retorno.
