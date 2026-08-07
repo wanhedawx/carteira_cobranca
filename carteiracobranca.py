@@ -60,6 +60,24 @@ STATUS_FORA_ATRASO = "FORA DO ATRASO"
 STATUS_COM_AGENDAMENTO = "COM AGENDAMENTO"
 STATUS_CANCELADO = "CANCELADO / RETIRADO"
 
+# Retornos padronizados da Carteira Ruptura.
+# A observação é obrigatória para TODAS as opções.
+RETORNOS_RUPTURA = [
+    "NÃO HOUVE RETORNO",
+    "EM ANÁLISE",
+    "FATURAMENTO PROGRAMADO",
+    "FATURADO",
+    "FATURADO E AGENDADO",
+    "FATURAMENTO PARCIAL",
+    "ENTREGUE",
+    "AGUARDANDO FORMAÇÃO DE CARGA",
+    "RUPTURA / SEM ESTOQUE",
+    "DIVERGÊNCIA COMERCIAL",
+    "CANCELADO",
+    "REPROGRAMADO",
+    "OUTROS",
+]
+
 COLUNAS_MOEDA = [
     "saldo_cmv",
     "pre_nota_cmv",
@@ -5008,10 +5026,14 @@ def inicializar_banco_ruptura():
         tipo text,
         data text,
         usuario text,
+        retorno_status text,
         observacao text,
         cobranca_numero integer,
         status_apos text
     );
+
+    alter table carteira_ruptura_historico
+    add column if not exists retorno_status text;
 
     create index if not exists idx_ruptura_ativo_dep
       on carteira_ruptura_pedidos (ativo, departamento_norm);
@@ -5289,7 +5311,7 @@ def buscar_retorno_cobranca_ruptura_por_numero(doc_ids):
 
     sql = text("""
         select distinct on (doc_id, cobranca_numero)
-            doc_id, cobranca_numero, observacao, data
+            doc_id, cobranca_numero, retorno_status, observacao, data
         from carteira_ruptura_historico
         where doc_id in :ids
           and tipo = 'RETORNO_COBRANCA'
@@ -5306,6 +5328,7 @@ def buscar_retorno_cobranca_ruptura_por_numero(doc_ids):
             doc_id = r["doc_id"]
             numero = int(r.get("cobranca_numero") or 0)
             mapa.setdefault(doc_id, {})[numero] = {
+                "retorno_status": r.get("retorno_status", "") or "",
                 "observacao": r.get("observacao", "") or "",
                 "data": r.get("data", "") or "",
             }
@@ -5327,10 +5350,15 @@ def tem_retorno_cobranca_ruptura(retornos_por_doc, doc_id, cobranca_numero):
         return True
 
     retorno = retornos_por_doc.get(doc_id, {}).get(numero)
-    return bool(retorno and str(retorno.get("observacao", "")).strip())
+    if not retorno:
+        return False
+
+    # Mantém compatibilidade com retornos antigos que ainda não possuíam
+    # a coluna retorno_status, mas já tinham uma observação registrada.
+    return bool(str(retorno.get("observacao", "") or "").strip())
 
 
-def texto_retorno_ruptura(linha, retornos_por_doc):
+def status_retorno_ruptura(linha, retornos_por_doc):
     doc_id = linha.get("doc_id", "")
     try:
         numero = int(linha.get("cobrancas", 0) or 0)
@@ -5344,8 +5372,34 @@ def texto_retorno_ruptura(linha, retornos_por_doc):
     if not retorno:
         return "PENDENTE"
 
-    obs = str(retorno.get("observacao", "") or "").strip()
-    return obs if obs else "PENDENTE"
+    status = str(retorno.get("retorno_status", "") or "").strip()
+    if status:
+        return status
+
+    # Registro antigo: havia apenas observação.
+    return "RETORNO ANTIGO"
+
+
+def obs_retorno_ruptura(linha, retornos_por_doc):
+    doc_id = linha.get("doc_id", "")
+    try:
+        numero = int(linha.get("cobrancas", 0) or 0)
+    except Exception:
+        numero = 0
+
+    if numero <= 0:
+        return ""
+
+    retorno = retornos_por_doc.get(doc_id, {}).get(numero)
+    if not retorno:
+        return ""
+
+    return str(retorno.get("observacao", "") or "").strip()
+
+
+def texto_retorno_ruptura(linha, retornos_por_doc):
+    # Mantido para compatibilidade com trechos antigos do script.
+    return status_retorno_ruptura(linha, retornos_por_doc)
 
 
 def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
@@ -5448,6 +5502,13 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
 
 
 def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
+    """
+    Salva ou atualiza o retorno da cobrança atual sem criar uma nova cobrança.
+
+    A atualização é registrada como uma nova linha no histórico usando o MESMO
+    cobranca_numero. A consulta do retorno usa sempre o registro mais recente,
+    preservando a rastreabilidade do que foi informado anteriormente.
+    """
     ids = list(dict.fromkeys([x for x in doc_ids if x]))
     if not ids:
         st.warning("Selecione pelo menos um pedido.")
@@ -5456,15 +5517,15 @@ def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
     retorno_opcao = str(retorno_opcao or "").strip().upper()
     observacao = str(observacao or "").strip()
 
-    if retorno_opcao not in ["HOUVE RETORNO", "NÃO HOUVE RETORNO"]:
-        st.warning("Selecione o retorno da cobrança.")
+    if retorno_opcao not in RETORNOS_RUPTURA:
+        st.warning("Selecione um retorno válido.")
         return False
 
-    if retorno_opcao == "HOUVE RETORNO" and not observacao:
-        st.warning("Quando houve retorno, descreva o retorno recebido.")
+    # Regra definida: TODOS os retornos precisam de observação obrigatória,
+    # inclusive NÃO HOUVE RETORNO.
+    if not observacao:
+        st.warning("A observação do retorno é obrigatória.")
         return False
-
-    obs_final = "NÃO HOUVE RETORNO" if retorno_opcao == "NÃO HOUVE RETORNO" else observacao
 
     sql = text("""
         select doc_id, pedido, cobrancas, status_cobranca
@@ -5490,7 +5551,9 @@ def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
                 "tipo": "RETORNO_COBRANCA",
                 "data": agora,
                 "usuario": usuario,
-                "observacao": obs_final,
+                "retorno_status": retorno_opcao,
+                "observacao": observacao,
+                # IMPORTANTE: usa a cobrança atual. Não soma +1.
                 "cobranca_numero": cobrancas,
                 "status_apos": item.get("status_cobranca", ""),
             })
@@ -5502,13 +5565,30 @@ def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
         with engine.begin() as conn:
             conn.execute(text("""
                 insert into carteira_ruptura_historico
-                (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
-                values (:doc_id,:pedido,:tipo,:data,:usuario,:observacao,:cobranca_numero,:status_apos)
+                (doc_id,pedido,tipo,data,usuario,retorno_status,observacao,cobranca_numero,status_apos)
+                values (:doc_id,:pedido,:tipo,:data,:usuario,:retorno_status,:observacao,:cobranca_numero,:status_apos)
             """), historicos)
+
+            conn.execute(
+                text("""
+                    update carteira_ruptura_pedidos
+                    set atualizado_em = :atualizado_em
+                    where doc_id in :ids
+                """).bindparams(bindparam("ids", expanding=True)),
+                {
+                    "ids": [h["doc_id"] for h in historicos],
+                    "atualizado_em": agora,
+                }
+            )
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
 
         return True
     except Exception as e:
-        st.error("Erro ao registrar retorno da Carteira Ruptura.")
+        st.error("Erro ao salvar/atualizar retorno da Carteira Ruptura.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         return False
@@ -5751,12 +5831,23 @@ def historico_ruptura_doc(doc_id):
     try:
         with engine.begin() as conn:
             rows = conn.execute(text("""
-                select tipo, data, usuario, observacao, cobranca_numero, status_apos
+                select tipo, data, usuario, retorno_status, observacao, cobranca_numero, status_apos
                 from carteira_ruptura_historico
                 where doc_id = :doc_id
                 order by data asc, id asc
             """), {"doc_id": doc_id}).mappings().all()
-        return [dict(r) for r in rows]
+
+        resultado = []
+        for row in rows:
+            item = dict(row)
+            if item.get("tipo") == "RETORNO_COBRANCA":
+                status = str(item.get("retorno_status", "") or "").strip()
+                obs = str(item.get("observacao", "") or "").strip()
+                if status:
+                    item["observacao"] = f"{status} | {obs}" if obs else status
+            resultado.append(item)
+
+        return resultado
     except Exception as e:
         st.error("Erro ao carregar histórico da Carteira Ruptura.")
         with st.expander("Ver detalhe técnico"):
@@ -5770,7 +5861,8 @@ def gerar_excel_ruptura_filtrada(df):
     colunas = [
         "analista", "departamento", "ranking_departamento", "fornecedor",
         "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca",
-        "cobrancas", "obs_cobranca", "retorno_ultima_cobranca", "ultima_cobranca"
+        "cobrancas", "obs_cobranca", "retorno_ultima_cobranca",
+        "obs_retorno_ultima_cobranca", "ultima_cobranca"
     ]
     colunas = [c for c in colunas if c in export.columns]
     export = export[colunas].rename(columns={
@@ -5784,7 +5876,8 @@ def gerar_excel_ruptura_filtrada(df):
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
         "obs_cobranca": "Obs Cobrança",
-        "retorno_ultima_cobranca": "Último Retorno",
+        "retorno_ultima_cobranca": "Retorno",
+        "obs_retorno_ultima_cobranca": "Obs Retorno",
         "ultima_cobranca": "Última Cobrança",
     })
 
@@ -5949,7 +6042,11 @@ def tela_carteira_ruptura(analista=None):
     dff = dff.copy()
     dff["obs_cobranca"] = dff["doc_id"].map(obs_cobranca_por_doc).fillna("")
     dff["retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: texto_retorno_ruptura(linha, retornos),
+        lambda linha: status_retorno_ruptura(linha, retornos),
+        axis=1
+    )
+    dff["obs_retorno_ultima_cobranca"] = dff.apply(
+        lambda linha: obs_retorno_ruptura(linha, retornos),
         axis=1
     )
 
@@ -5967,7 +6064,8 @@ def tela_carteira_ruptura(analista=None):
     exib = dff[[
         "doc_id", "analista", "departamento", "ranking_departamento", "fornecedor",
         "pedido", "qtd_produtos", "saldo_cmv", "status_cobranca", "cobrancas",
-        "obs_cobranca", "retorno_ultima_cobranca", "ultima_cobranca"
+        "obs_cobranca", "retorno_ultima_cobranca",
+        "obs_retorno_ultima_cobranca", "ultima_cobranca"
     ]].copy()
 
     exib["Selecionar"] = False
@@ -5984,7 +6082,8 @@ def tela_carteira_ruptura(analista=None):
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
         "obs_cobranca": "Obs Cobrança",
-        "retorno_ultima_cobranca": "Último Retorno",
+        "retorno_ultima_cobranca": "Retorno",
+        "obs_retorno_ultima_cobranca": "Obs Retorno",
         "ultima_cobranca": "Última Cobrança",
     })
 
@@ -5992,14 +6091,14 @@ def tela_carteira_ruptura(analista=None):
         exib[[
             "Selecionar", "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
             "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
-            "Obs Cobrança", "Último Retorno", "Última Cobrança"
+            "Obs Cobrança", "Retorno", "Obs Retorno", "Última Cobrança"
         ]],
         use_container_width=True,
         hide_index=True,
         disabled=[
             "doc_id", "Analista", "Departamento", "Top", "Fornecedor",
             "Pedido", "Qtd Produtos", "Saldo CMV", "Status", "Cobranças",
-            "Obs Cobrança", "Último Retorno", "Última Cobrança"
+            "Obs Cobrança", "Retorno", "Obs Retorno", "Última Cobrança"
         ],
         column_config={"doc_id": None},
         key=f"ruptura_editor_{analista or 'admin'}",
@@ -6018,7 +6117,7 @@ def tela_carteira_ruptura(analista=None):
     df_resumo = df_acao[[
         "analista", "departamento", "fornecedor", "pedido",
         "status_cobranca", "cobrancas", "obs_cobranca",
-        "retorno_ultima_cobranca", "saldo_cmv"
+        "retorno_ultima_cobranca", "obs_retorno_ultima_cobranca", "saldo_cmv"
     ]].copy()
 
     df_resumo = df_resumo.rename(columns={
@@ -6029,7 +6128,8 @@ def tela_carteira_ruptura(analista=None):
         "status_cobranca": "Status",
         "cobrancas": "Cobranças",
         "obs_cobranca": "Obs Cobrança",
-        "retorno_ultima_cobranca": "Último Retorno",
+        "retorno_ultima_cobranca": "Retorno",
+        "obs_retorno_ultima_cobranca": "Obs Retorno",
         "saldo_cmv": "Saldo CMV",
     })
 
@@ -6065,29 +6165,48 @@ def tela_carteira_ruptura(analista=None):
 
         if tem_retorno_pendente:
             st.warning(
-                "Para liberar a próxima cobrança, informe o retorno da última cobrança "
-                "ou marque como NÃO HOUVE RETORNO."
+                "Para liberar a próxima cobrança, informe o retorno da última cobrança. "
+                "A observação é obrigatória em todos os casos."
             )
         else:
-            st.success("Todos os pedidos selecionados com cobrança possuem retorno.")
+            st.success(
+                "Os pedidos selecionados já possuem retorno. Você pode atualizá-lo "
+                "sem registrar uma nova cobrança."
+            )
 
         retorno_opcao = st.selectbox(
-            "Retorno",
-            ["", "HOUVE RETORNO", "NÃO HOUVE RETORNO"],
+            "Retorno *",
+            [""] + RETORNOS_RUPTURA,
             key=f"rupt_retorno_opcao_{analista or 'admin'}"
         )
 
         obs_retorno = st.text_area(
-            "Detalhe do retorno",
+            "Observação do retorno *",
             key=f"rupt_obs_retorno_{analista or 'admin'}",
-            placeholder="Ex.: informou nova previsão, vai verificar, ou NÃO HOUVE RETORNO."
+            placeholder=(
+                "Obrigatório. Ex.: fornecedor informou faturamento para 10/08; "
+                "pedido cancelado por divergência de preço; cobrado via e-mail e sem resposta."
+            )
+        )
+
+        ja_tem_retorno = bool(
+            (df_acao["retorno_ultima_cobranca"].astype(str).str.upper() != "PENDENTE").any()
+        )
+        texto_botao_retorno = (
+            "Atualizar retorno da última cobrança"
+            if ja_tem_retorno
+            else "Salvar retorno da última cobrança"
+        )
+
+        st.caption(
+            "Atualizar o retorno mantém o mesmo número de cobrança e preserva o histórico anterior."
         )
 
         if st.button(
-            "Salvar retorno da última cobrança",
+            texto_botao_retorno,
             key=f"rupt_salvar_retorno_{analista or 'admin'}",
             use_container_width=True,
-            disabled=(retorno_opcao == "")
+            disabled=(retorno_opcao == "" or not obs_retorno.strip())
         ):
             ids_retorno = df_acao[
                 pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0
@@ -6096,7 +6215,7 @@ def tela_carteira_ruptura(analista=None):
             if registrar_retorno_ruptura_lote(
                 ids_retorno, usuario_logado, retorno_opcao, obs_retorno
             ):
-                st.success("Retorno registrado.")
+                st.success("Retorno salvo/atualizado sem criar nova cobrança.")
                 st.rerun()
 
     maior_cobranca = int(
