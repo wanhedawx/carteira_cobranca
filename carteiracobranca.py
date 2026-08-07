@@ -6068,7 +6068,35 @@ def tela_carteira_ruptura(analista=None):
         "obs_retorno_ultima_cobranca", "ultima_cobranca"
     ]].copy()
 
-    exib["Selecionar"] = False
+    # Seleção em massa: marca/desmarca todos os pedidos que estão visíveis
+    # na tabela após a aplicação dos filtros.
+    usuario_chave = analista or "admin"
+    key_selecionar_todos = f"ruptura_selecionar_todos_{usuario_chave}"
+    key_selecionar_todos_anterior = f"ruptura_selecionar_todos_anterior_{usuario_chave}"
+    key_editor_revisao = f"ruptura_editor_revisao_{usuario_chave}"
+
+    if key_editor_revisao not in st.session_state:
+        st.session_state[key_editor_revisao] = 0
+
+    selecionar_todos = st.checkbox(
+        "Selecionar todos os pedidos exibidos",
+        key=key_selecionar_todos,
+        help="Marca ou desmarca todos os pedidos que aparecem na tabela com os filtros atuais."
+    )
+
+    # Quando o usuário altera o checkbox geral, recriamos somente o editor da tabela.
+    # Isso garante que todas as caixas individuais acompanhem a nova seleção.
+    selecionar_todos_anterior = st.session_state.get(
+        key_selecionar_todos_anterior,
+        selecionar_todos
+    )
+
+    if selecionar_todos_anterior != selecionar_todos:
+        st.session_state[key_editor_revisao] += 1
+
+    st.session_state[key_selecionar_todos_anterior] = selecionar_todos
+
+    exib["Selecionar"] = bool(selecionar_todos)
     exib["saldo_cmv"] = exib["saldo_cmv"].apply(formatar_moeda)
 
     exib = exib.rename(columns={
@@ -6101,7 +6129,7 @@ def tela_carteira_ruptura(analista=None):
             "Obs Cobrança", "Retorno", "Obs Retorno", "Última Cobrança"
         ],
         column_config={"doc_id": None},
-        key=f"ruptura_editor_{analista or 'admin'}",
+        key=f"ruptura_editor_{usuario_chave}_{st.session_state[key_editor_revisao]}",
     )
 
     selecionados = edit.loc[edit["Selecionar"] == True, "doc_id"].tolist()
