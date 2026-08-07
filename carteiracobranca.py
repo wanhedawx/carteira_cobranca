@@ -88,6 +88,7 @@ COLUNAS_MOEDA = [
     "pre_nota_cmv_pedido",
     "nao_faturado_cmv_pedido",
     "Saldo CMV",
+    "Saldo CMV Item",
     "Pré-nota CMV",
     "Não Faturado CMV",
     "Saldo CMV selecionado",
@@ -5034,6 +5035,22 @@ def inicializar_banco_ruptura():
     alter table carteira_ruptura_historico
     add column if not exists retorno_status text;
 
+    create table if not exists carteira_ruptura_item_retorno (
+        id bigserial primary key,
+        doc_id text references carteira_ruptura_pedidos(doc_id) on delete cascade,
+        item_chave text not null,
+        codigo_produto text,
+        descricao_produto text,
+        cobranca_numero integer not null,
+        retorno_status text not null,
+        observacao text not null,
+        data text,
+        usuario text
+    );
+
+    create index if not exists idx_ruptura_item_retorno_doc
+      on carteira_ruptura_item_retorno (doc_id, cobranca_numero, item_chave);
+
     create index if not exists idx_ruptura_ativo_dep
       on carteira_ruptura_pedidos (ativo, departamento_norm);
 
@@ -5163,17 +5180,32 @@ def salvar_carteira_ruptura(df, origem="upload manual"):
         saldo_pedido = float(g["_saldo_cmv"].sum())
         rank = int(g["ranking_departamento"].iloc[0])
 
+        doc_id = hash_id("RUPTURA", pedido, departamento, fornecedor)
+
         itens = []
+        ocorrencias_item = {}
         for _, r in g.iterrows():
+            codigo_item = str(r.get("_cod_prod", "") or "").strip()
+            descricao_item = (
+                str(r.get(cols["descricao"], "") or "").strip()
+                if cols.get("descricao") else ""
+            )
+
+            base_chave = norm(codigo_item) or norm(descricao_item) or "ITEM"
+            ocorrencias_item[base_chave] = ocorrencias_item.get(base_chave, 0) + 1
+            item_chave = hash_id(
+                "RUPTURA_ITEM", doc_id, base_chave, ocorrencias_item[base_chave]
+            )
+
             item = {
-                "codigo": str(r.get("_cod_prod", "") or "").strip(),
+                "item_chave": item_chave,
+                "codigo": codigo_item,
                 "saldo_cmv": float(r.get("_saldo_cmv", 0) or 0),
             }
             if cols.get("descricao"):
-                item["descricao"] = str(r.get(cols["descricao"], "") or "").strip()
+                item["descricao"] = descricao_item
             itens.append(item)
 
-        doc_id = hash_id("RUPTURA", pedido, departamento, fornecedor)
         linhas.append({
             "doc_id": doc_id,
             "pedido": str(pedido),
@@ -5268,6 +5300,307 @@ def buscar_carteira_ruptura(analista=None):
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         return pd.DataFrame()
+
+
+def itens_normalizados_ruptura(pedido):
+    """Retorna os itens do pedido com item_chave estável, inclusive para dados antigos."""
+    bruto = pedido.get("itens_json", "[]") if hasattr(pedido, "get") else "[]"
+
+    if isinstance(bruto, list):
+        itens = bruto
+    elif isinstance(bruto, dict):
+        itens = [bruto]
+    else:
+        try:
+            itens = json.loads(bruto or "[]")
+        except Exception:
+            itens = []
+
+    if isinstance(itens, dict):
+        itens = [itens]
+    if not isinstance(itens, list):
+        itens = []
+
+    if not itens:
+        itens = [{
+            "codigo": "",
+            "descricao": "",
+            "saldo_cmv": pedido.get("saldo_cmv", 0) if hasattr(pedido, "get") else 0,
+        }]
+
+    doc_id = str(pedido.get("doc_id", "") or "") if hasattr(pedido, "get") else ""
+    ocorrencias = {}
+    saida = []
+
+    for ordem_item, item in enumerate(itens, start=1):
+        if not isinstance(item, dict):
+            item = {}
+
+        codigo = str(item.get("codigo", "") or "").strip()
+        descricao = str(item.get("descricao", "") or "").strip()
+        base_chave = norm(codigo) or norm(descricao) or "ITEM"
+        ocorrencias[base_chave] = ocorrencias.get(base_chave, 0) + 1
+
+        item_chave = str(item.get("item_chave", "") or "").strip()
+        if not item_chave:
+            item_chave = hash_id(
+                "RUPTURA_ITEM", doc_id, base_chave, ocorrencias[base_chave]
+            )
+
+        novo = dict(item)
+        novo["item_chave"] = item_chave
+        novo["codigo"] = codigo
+        novo["descricao"] = descricao
+        novo["item_ordem"] = ordem_item
+        saida.append(novo)
+
+    return saida
+
+
+def buscar_retorno_item_ruptura_por_numero(doc_ids):
+    ids = list(dict.fromkeys([x for x in doc_ids if x]))
+    if not ids:
+        return {}
+
+    sql = text("""
+        select distinct on (doc_id, item_chave, cobranca_numero)
+            doc_id, item_chave, codigo_produto, descricao_produto,
+            cobranca_numero, retorno_status, observacao, data, usuario
+        from carteira_ruptura_item_retorno
+        where doc_id in :ids
+        order by doc_id, item_chave, cobranca_numero, data desc, id desc
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {"ids": ids}).mappings().all()
+
+        mapa = {}
+        for r in rows:
+            doc_id = r["doc_id"]
+            item_chave = str(r.get("item_chave", "") or "")
+            numero = int(r.get("cobranca_numero") or 0)
+            mapa.setdefault(doc_id, {}).setdefault(item_chave, {})[numero] = {
+                "retorno_status": r.get("retorno_status", "") or "",
+                "observacao": r.get("observacao", "") or "",
+                "data": r.get("data", "") or "",
+                "usuario": r.get("usuario", "") or "",
+            }
+        return mapa
+    except Exception as e:
+        st.error("Erro ao buscar motivos por item da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return {}
+
+
+def _retorno_item_atual(retornos_itens, doc_id, item_chave, cobranca_numero):
+    try:
+        numero = int(cobranca_numero or 0)
+    except Exception:
+        numero = 0
+    if numero <= 0:
+        return None
+    return retornos_itens.get(doc_id, {}).get(item_chave, {}).get(numero)
+
+
+def pedido_tem_algum_motivo_item(pedido, retornos_itens):
+    doc_id = str(pedido.get("doc_id", "") or "")
+    try:
+        numero = int(pedido.get("cobrancas", 0) or 0)
+    except Exception:
+        numero = 0
+    if numero <= 0:
+        return False
+
+    for item in itens_normalizados_ruptura(pedido):
+        ret = _retorno_item_atual(retornos_itens, doc_id, item["item_chave"], numero)
+        if (
+            ret
+            and str(ret.get("retorno_status", "") or "").strip()
+            and str(ret.get("observacao", "") or "").strip()
+        ):
+            return True
+    return False
+
+
+def pedido_tem_todos_itens_com_motivo(pedido, retornos_itens, retornos_pedido_legado=None):
+    """Só libera a próxima cobrança quando todos os itens têm motivo + observação."""
+    doc_id = str(pedido.get("doc_id", "") or "")
+    try:
+        numero = int(pedido.get("cobrancas", 0) or 0)
+    except Exception:
+        numero = 0
+
+    if numero <= 0:
+        return True
+
+    itens = itens_normalizados_ruptura(pedido)
+    if not itens:
+        return True
+
+    preenchidos = 0
+    for item in itens:
+        ret = _retorno_item_atual(retornos_itens, doc_id, item["item_chave"], numero)
+        if (
+            ret
+            and str(ret.get("retorno_status", "") or "").strip()
+            and str(ret.get("observacao", "") or "").strip()
+        ):
+            preenchidos += 1
+
+    if preenchidos == len(itens):
+        return True
+
+    # Compatibilidade: antes desta mudança, o retorno era salvo no pedido.
+    if preenchidos == 0 and retornos_pedido_legado:
+        antigo = retornos_pedido_legado.get(doc_id, {}).get(numero)
+        if antigo and str(antigo.get("observacao", "") or "").strip():
+            return True
+
+    return False
+
+
+def resumo_motivos_itens_pedido(pedido, retornos_itens, retornos_pedido_legado=None):
+    doc_id = str(pedido.get("doc_id", "") or "")
+    try:
+        numero = int(pedido.get("cobrancas", 0) or 0)
+    except Exception:
+        numero = 0
+
+    if numero <= 0:
+        return "", ""
+
+    itens = itens_normalizados_ruptura(pedido)
+    motivos = []
+    preenchidos = 0
+
+    for item in itens:
+        ret = _retorno_item_atual(retornos_itens, doc_id, item["item_chave"], numero)
+        if (
+            ret
+            and str(ret.get("retorno_status", "") or "").strip()
+            and str(ret.get("observacao", "") or "").strip()
+        ):
+            preenchidos += 1
+            motivos.append(str(ret.get("retorno_status", "") or "").strip())
+
+    if preenchidos == 0 and retornos_pedido_legado:
+        legado = retornos_pedido_legado.get(doc_id, {}).get(numero)
+        if legado and str(legado.get("observacao", "") or "").strip():
+            status = str(legado.get("retorno_status", "") or "").strip() or "RETORNO ANTIGO"
+            return status, str(legado.get("observacao", "") or "").strip()
+
+    if preenchidos == 0:
+        return "PENDENTE", f"0/{len(itens)} itens com motivo"
+    if preenchidos < len(itens):
+        return "PARCIAL", f"{preenchidos}/{len(itens)} itens com motivo"
+
+    unicos = list(dict.fromkeys(motivos))
+    if len(unicos) == 1:
+        return unicos[0], f"{preenchidos}/{len(itens)} itens com motivo"
+    return "MÚLTIPLOS MOTIVOS", f"{preenchidos}/{len(itens)} itens com motivo"
+
+
+def registrar_retorno_item_ruptura_lote(itens_selecionados, usuario, retorno_opcao, observacao):
+    """Salva/atualiza motivo do item na cobrança atual, sem criar nova cobrança."""
+    retorno_opcao = str(retorno_opcao or "").strip().upper()
+    observacao = str(observacao or "").strip()
+
+    if retorno_opcao not in RETORNOS_RUPTURA:
+        st.warning("Selecione um motivo válido.")
+        return False
+    if not observacao:
+        st.warning("A observação do motivo é obrigatória.")
+        return False
+
+    registros = [
+        x for x in (itens_selecionados or [])
+        if isinstance(x, dict)
+        and str(x.get("doc_id", "") or "").strip()
+        and str(x.get("item_chave", "") or "").strip()
+    ]
+    if not registros:
+        st.warning("Selecione pelo menos um item.")
+        return False
+
+    doc_ids = list(dict.fromkeys([str(x["doc_id"]) for x in registros]))
+    sql_pedidos = text("""
+        select doc_id, pedido, cobrancas
+        from carteira_ruptura_pedidos
+        where doc_id in :ids and ativo = true
+    """).bindparams(bindparam("ids", expanding=True))
+
+    try:
+        with engine.begin() as conn:
+            pedidos = conn.execute(sql_pedidos, {"ids": doc_ids}).mappings().all()
+
+        mapa_pedidos = {p["doc_id"]: dict(p) for p in pedidos}
+        agora = agora_str()
+        inserts = []
+        sem_cobranca = []
+
+        for item in registros:
+            pedido = mapa_pedidos.get(item["doc_id"])
+            if not pedido:
+                continue
+
+            numero = int(pedido.get("cobrancas") or 0)
+            if numero <= 0:
+                sem_cobranca.append(pedido.get("pedido", item["doc_id"]))
+                continue
+
+            inserts.append({
+                "doc_id": item["doc_id"],
+                "item_chave": item["item_chave"],
+                "codigo_produto": str(item.get("codigo_produto", "") or ""),
+                "descricao_produto": str(item.get("descricao_produto", "") or ""),
+                "cobranca_numero": numero,
+                "retorno_status": retorno_opcao,
+                "observacao": observacao,
+                "data": agora,
+                "usuario": usuario,
+            })
+
+        if sem_cobranca:
+            st.warning(
+                "Itens de pedidos sem cobrança foram ignorados: "
+                + ", ".join(str(x) for x in list(dict.fromkeys(sem_cobranca))[:20])
+            )
+        if not inserts:
+            st.warning("Nenhum item selecionado pertence a um pedido com cobrança registrada.")
+            return False
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                insert into carteira_ruptura_item_retorno
+                (doc_id,item_chave,codigo_produto,descricao_produto,cobranca_numero,
+                 retorno_status,observacao,data,usuario)
+                values (:doc_id,:item_chave,:codigo_produto,:descricao_produto,:cobranca_numero,
+                        :retorno_status,:observacao,:data,:usuario)
+            """), inserts)
+
+            conn.execute(
+                text("""
+                    update carteira_ruptura_pedidos
+                    set atualizado_em = :agora
+                    where doc_id in :ids
+                """).bindparams(bindparam("ids", expanding=True)),
+                {"agora": agora, "ids": list(dict.fromkeys([x["doc_id"] for x in inserts]))}
+            )
+
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        st.success(f"Motivo salvo/atualizado para {len(inserts)} item(ns).")
+        return True
+    except Exception as e:
+        st.error("Erro ao salvar motivo por item da Carteira Ruptura.")
+        with st.expander("Ver detalhe técnico"):
+            st.code(repr(e))
+        return False
 
 
 def buscar_obs_ultima_cobranca_ruptura(doc_ids):
@@ -5408,12 +5741,13 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
         return False
 
     sql_sel = text("""
-        select doc_id, pedido, cobrancas, comprador_acionado
+        select doc_id, pedido, cobrancas, comprador_acionado, itens_json, saldo_cmv
         from carteira_ruptura_pedidos
         where doc_id in :ids and ativo = true
     """).bindparams(bindparam("ids", expanding=True))
 
-    retornos = buscar_retorno_cobranca_ruptura_por_numero(ids)
+    retornos_itens = buscar_retorno_item_ruptura_por_numero(ids)
+    retornos_legados = buscar_retorno_cobranca_ruptura_por_numero(ids)
     agora = agora_str()
     updates = []
     historicos = []
@@ -5424,7 +5758,8 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
         with engine.begin() as conn:
             itens = conn.execute(sql_sel, {"ids": ids}).mappings().all()
 
-        for item in itens:
+        for item_row in itens:
+            item = dict(item_row)
             doc_id = item["doc_id"]
             atual = int(item.get("cobrancas") or 0)
 
@@ -5432,7 +5767,9 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
                 bloqueados_limite.append(item.get("pedido", doc_id))
                 continue
 
-            if atual > 0 and not tem_retorno_cobranca_ruptura(retornos, doc_id, atual):
+            if atual > 0 and not pedido_tem_todos_itens_com_motivo(
+                item, retornos_itens, retornos_legados
+            ):
                 bloqueados_retorno.append(item.get("pedido", doc_id))
                 continue
 
@@ -5460,17 +5797,15 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
 
         if bloqueados_retorno:
             st.warning(
-                "Antes da próxima cobrança, informe o retorno da última cobrança "
-                "ou marque NÃO HOUVE RETORNO. Pedidos bloqueados: "
+                "Antes da próxima cobrança, preencha Motivo + Observação de TODOS os itens "
+                "da cobrança atual. Pedidos bloqueados: "
                 + ", ".join(str(x) for x in bloqueados_retorno[:20])
             )
-
         if bloqueados_limite:
             st.warning(
                 "Alguns pedidos já possuem 3 cobranças: "
                 + ", ".join(str(x) for x in bloqueados_limite[:20])
             )
-
         if not updates:
             return False
 
@@ -5483,7 +5818,6 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
                     atualizado_em=:atualizado
                 where doc_id=:doc_id
             """), updates)
-
             conn.execute(text("""
                 insert into carteira_ruptura_historico
                 (doc_id,pedido,tipo,data,usuario,observacao,cobranca_numero,status_apos)
@@ -5492,13 +5826,11 @@ def registrar_cobranca_ruptura(doc_ids, usuario, observacao=""):
 
         st.success(f"Cobrança registrada para {len(updates)} pedido(s) da Ruptura.")
         return True
-
     except Exception as e:
         st.error("Erro ao registrar cobrança da Carteira Ruptura.")
         with st.expander("Ver detalhe técnico"):
             st.code(repr(e))
         return False
-
 
 def registrar_retorno_ruptura_lote(doc_ids, usuario, retorno_opcao, observacao):
     """
@@ -5854,6 +6186,131 @@ def historico_ruptura_doc(doc_id):
         return []
 
 
+
+def montar_carteira_ruptura_por_item(df_pedidos, retornos_itens=None, retornos_pedido_legado=None):
+    """
+    Abre os pedidos em nível de item. Cobrança é do pedido; motivo e observação são do item.
+    """
+    if df_pedidos is None or df_pedidos.empty:
+        return pd.DataFrame()
+
+    retornos_itens = retornos_itens or {}
+    retornos_pedido_legado = retornos_pedido_legado or {}
+    linhas = []
+
+    for _, pedido in df_pedidos.iterrows():
+        doc_id = str(pedido.get("doc_id", "") or "")
+        try:
+            numero = int(pedido.get("cobrancas", 0) or 0)
+        except Exception:
+            numero = 0
+        itens = itens_normalizados_ruptura(pedido)
+        existe_motivo_item = pedido_tem_algum_motivo_item(pedido, retornos_itens)
+        legado = retornos_pedido_legado.get(doc_id, {}).get(numero) if numero > 0 else None
+
+        for item in itens:
+            codigo = str(item.get("codigo", "") or "").strip()
+            descricao = str(item.get("descricao", "") or "").strip()
+            saldo_item = converter_numero(item.get("saldo_cmv", item.get("saldo_cmv_item", 0)))
+            item_chave = str(item.get("item_chave", "") or "")
+            retorno_item = _retorno_item_atual(retornos_itens, doc_id, item_chave, numero)
+
+            if retorno_item:
+                motivo_item = str(retorno_item.get("retorno_status", "") or "").strip()
+                obs_motivo_item = str(retorno_item.get("observacao", "") or "").strip()
+            elif not existe_motivo_item and legado and str(legado.get("observacao", "") or "").strip():
+                motivo_item = str(legado.get("retorno_status", "") or "").strip() or "RETORNO ANTIGO"
+                obs_motivo_item = str(legado.get("observacao", "") or "").strip()
+            else:
+                motivo_item = "PENDENTE" if numero > 0 else ""
+                obs_motivo_item = ""
+
+            linhas.append({
+                "doc_id": doc_id,
+                "item_chave": item_chave,
+                "analista": pedido.get("analista", ""),
+                "departamento": pedido.get("departamento", ""),
+                "ranking_departamento": pedido.get("ranking_departamento", ""),
+                "fornecedor": pedido.get("fornecedor", ""),
+                "pedido": pedido.get("pedido", ""),
+                "item_ordem": item.get("item_ordem", ""),
+                "codigo_produto": codigo,
+                "descricao_produto": descricao,
+                "saldo_cmv_item": saldo_item,
+                "status_cobranca": pedido.get("status_cobranca", ""),
+                "cobrancas": pedido.get("cobrancas", 0),
+                "obs_cobranca": pedido.get("obs_cobranca", ""),
+                "motivo_item": motivo_item,
+                "obs_motivo_item": obs_motivo_item,
+                "ultima_cobranca": pedido.get("ultima_cobranca", ""),
+            })
+
+    itens_df = pd.DataFrame(linhas)
+    if not itens_df.empty:
+        itens_df["produto_busca"] = (
+            itens_df["codigo_produto"].fillna("").astype(str)
+            + " "
+            + itens_df["descricao_produto"].fillna("").astype(str)
+        )
+        itens_df = itens_df.sort_values(
+            ["analista", "departamento", "ranking_departamento", "fornecedor", "pedido", "item_ordem"],
+            na_position="last"
+        )
+    return itens_df
+
+def gerar_excel_ruptura_por_item(df_itens):
+    """Gera o Excel da visualização POR ITEM da Carteira Ruptura."""
+    export = df_itens.copy()
+
+    colunas = [
+        "analista", "departamento", "ranking_departamento", "fornecedor",
+        "pedido", "item_ordem", "codigo_produto", "descricao_produto",
+        "saldo_cmv_item", "status_cobranca", "cobrancas", "obs_cobranca",
+        "motivo_item", "obs_motivo_item", "ultima_cobranca"
+    ]
+    colunas = [c for c in colunas if c in export.columns]
+    export = export[colunas].rename(columns={
+        "analista": "Analista",
+        "departamento": "Departamento",
+        "ranking_departamento": "Top",
+        "fornecedor": "Fornecedor",
+        "pedido": "Pedido",
+        "item_ordem": "Item",
+        "codigo_produto": "Cód Produto",
+        "descricao_produto": "Descrição Produto",
+        "saldo_cmv_item": "Saldo CMV Item",
+        "status_cobranca": "Status",
+        "cobrancas": "Cobranças",
+        "obs_cobranca": "Obs Cobrança",
+        "motivo_item": "Motivo Item",
+        "obs_motivo_item": "Obs Motivo Item",
+        "ultima_cobranca": "Última Cobrança",
+    })
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        export.to_excel(writer, index=False, sheet_name="Ruptura por Item")
+        ws = writer.book["Ruptura por Item"]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+        larguras = {
+            "A": 16, "B": 24, "C": 8, "D": 34, "E": 16,
+            "F": 8, "G": 16, "H": 42, "I": 18, "J": 20,
+            "K": 12, "L": 42, "M": 24, "N": 48, "O": 20,
+        }
+        for col, largura in larguras.items():
+            ws.column_dimensions[col].width = largura
+
+        if "Saldo CMV Item" in export.columns:
+            idx = export.columns.get_loc("Saldo CMV Item") + 1
+            for row in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
+                row[0].number_format = '#,##0.00'
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def gerar_excel_ruptura_filtrada(df):
     export = df.copy()
 
@@ -6019,24 +6476,22 @@ def tela_carteira_ruptura(analista=None):
     doc_ids_tela = dff["doc_id"].dropna().tolist()
 
     retornos = buscar_retorno_cobranca_ruptura_por_numero(doc_ids_tela)
+    retornos_itens = buscar_retorno_item_ruptura_por_numero(doc_ids_tela)
     obs_cobranca_por_doc = buscar_obs_ultima_cobranca_ruptura(doc_ids_tela)
 
     dff = dff.copy()
     dff["obs_cobranca"] = dff["doc_id"].map(obs_cobranca_por_doc).fillna("")
     dff["retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: status_retorno_ruptura(linha, retornos),
+        lambda linha: resumo_motivos_itens_pedido(linha, retornos_itens, retornos)[0],
         axis=1
     )
     dff["obs_retorno_ultima_cobranca"] = dff.apply(
-        lambda linha: obs_retorno_ruptura(linha, retornos),
+        lambda linha: resumo_motivos_itens_pedido(linha, retornos_itens, retornos)[1],
         axis=1
     )
 
     # Filtros adicionais da cobrança/retorno.
-    # Ex.: Cobranças = 2 + Retorno = CANCELADO mostra somente esses pedidos
-    # e recalcula todos os cards/valores abaixo.
-    # As opções dos dois filtros são montadas antes de aplicar qualquer um deles,
-    # permitindo combinar livremente quantidade de cobranças + retorno.
+    # Ex.: Cobranças = 2 + Retorno = CANCELADO mostra somente esses pedidos.
     dff_base_cobranca_retorno = dff.copy()
     f1, f2 = st.columns(2)
 
@@ -6074,8 +6529,6 @@ def tela_carteira_ruptura(analista=None):
             if str(x).strip()
         ]
 
-        # Mantém a ordem da lista padrão e acrescenta retornos antigos/legados
-        # que ainda existirem na base, como RETORNO ANTIGO ou PENDENTE.
         opcoes_retorno = [
             r for r in RETORNOS_RUPTURA
             if r in retornos_existentes
@@ -6091,7 +6544,7 @@ def tela_carteira_ruptura(analista=None):
             st.session_state[key_filtro_retorno] = "TODOS"
 
         retorno_filtro = st.selectbox(
-            "Retorno",
+            "Resumo dos motivos do pedido",
             opcoes_retorno,
             key=key_filtro_retorno
         )
@@ -6109,7 +6562,205 @@ def tela_carteira_ruptura(analista=None):
             dff["retorno_ultima_cobranca"].astype(str).str.strip() == retorno_filtro
         ]
 
-    # Cards refletem TODOS os filtros, inclusive Cobranças + Retorno.
+    # A mesma carteira pode ser analisada por PEDIDO ou aberta por ITEM.
+    visualizacao = st.radio(
+        "Visualização",
+        ["POR PEDIDO", "POR ITEM"],
+        horizontal=True,
+        key=f"rupt_visualizacao_{analista or 'admin'}",
+        help=(
+            "POR ITEM abre cada pedido produto a produto. A cobrança continua no pedido, "
+            "mas o motivo e a observação são registrados individualmente por item."
+        )
+    )
+
+    if visualizacao == "POR ITEM":
+        df_itens = montar_carteira_ruptura_por_item(
+            dff,
+            retornos_itens=retornos_itens,
+            retornos_pedido_legado=retornos,
+        )
+
+        st.caption(
+            "Cobranças continuam por PEDIDO. Motivo/Retorno e Observação são por ITEM. "
+            "Itens do mesmo pedido podem ter motivos diferentes."
+        )
+
+        fi1, fi2 = st.columns([2, 1.4])
+        with fi1:
+            busca_item = st.text_input(
+                "Pesquisar item (código ou descrição)",
+                key=f"rupt_busca_item_{analista or 'admin'}",
+                placeholder="Digite o código do produto ou parte da descrição"
+            )
+        with fi2:
+            motivos_existentes = [
+                str(x).strip()
+                for x in df_itens.get("motivo_item", pd.Series(dtype=str)).dropna().unique().tolist()
+                if str(x).strip()
+            ]
+            opcoes_motivo_item = [r for r in RETORNOS_RUPTURA if r in motivos_existentes]
+            extras_motivo_item = sorted(r for r in motivos_existentes if r not in RETORNOS_RUPTURA)
+            opcoes_motivo_item = ["TODOS"] + opcoes_motivo_item + extras_motivo_item
+            motivo_item_filtro = st.selectbox(
+                "Motivo do item", opcoes_motivo_item,
+                key=f"rupt_motivo_item_filtro_{analista or 'admin'}"
+            )
+
+        if busca_item.strip() and not df_itens.empty:
+            df_itens = df_itens[
+                df_itens["produto_busca"].astype(str).str.contains(
+                    busca_item.strip(), case=False, na=False
+                )
+            ].copy()
+        if motivo_item_filtro != "TODOS" and not df_itens.empty:
+            df_itens = df_itens[
+                df_itens["motivo_item"].astype(str).str.strip() == motivo_item_filtro
+            ].copy()
+
+        if df_itens.empty:
+            st.info("Nenhum item encontrado com os filtros selecionados.")
+            return
+
+        i1, i2, i3, i4, i5 = st.columns(5)
+        i1.metric("Pedidos", int(df_itens["pedido"].nunique()))
+        i2.metric("Fornecedores TOP 5", int(df_itens[["departamento", "fornecedor"]].drop_duplicates().shape[0]))
+        i3.metric("Itens", int(len(df_itens)))
+        i4.metric(
+            "Produtos distintos",
+            int(df_itens.loc[df_itens["codigo_produto"].fillna("").astype(str).str.strip() != "", "codigo_produto"].astype(str).nunique())
+        )
+        i5.metric(
+            "Saldo CMV Itens",
+            formatar_moeda(pd.to_numeric(df_itens["saldo_cmv_item"], errors="coerce").fillna(0).sum())
+        )
+
+        excel_itens = gerar_excel_ruptura_por_item(df_itens)
+        st.download_button(
+            "Baixar carteira por item em Excel",
+            data=excel_itens,
+            file_name=f"carteira_ruptura_por_item_{hoje().strftime('%Y-%m-%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"download_ruptura_item_{analista or 'admin'}",
+        )
+
+        exib_itens = df_itens[[
+            "doc_id", "item_chave", "analista", "departamento", "ranking_departamento",
+            "fornecedor", "pedido", "item_ordem", "codigo_produto", "descricao_produto",
+            "saldo_cmv_item", "status_cobranca", "cobrancas", "motivo_item",
+            "obs_motivo_item", "ultima_cobranca"
+        ]].copy()
+
+        usuario_chave_item = analista or "admin"
+        key_todos_itens = f"rupt_todos_itens_{usuario_chave_item}"
+        key_todos_itens_ant = f"rupt_todos_itens_ant_{usuario_chave_item}"
+        key_editor_item_rev = f"rupt_editor_item_rev_{usuario_chave_item}"
+        if key_editor_item_rev not in st.session_state:
+            st.session_state[key_editor_item_rev] = 0
+
+        selecionar_todos_itens = st.checkbox(
+            "Selecionar todos os itens exibidos",
+            key=key_todos_itens,
+            help="Seleciona somente os itens visíveis após os filtros."
+        )
+        ant = st.session_state.get(key_todos_itens_ant, selecionar_todos_itens)
+        if ant != selecionar_todos_itens:
+            st.session_state[key_editor_item_rev] += 1
+        st.session_state[key_todos_itens_ant] = selecionar_todos_itens
+
+        exib_itens["Selecionar"] = bool(selecionar_todos_itens)
+        exib_itens["saldo_cmv_item"] = exib_itens["saldo_cmv_item"].apply(formatar_moeda)
+        exib_itens = exib_itens.rename(columns={
+            "analista": "Analista", "departamento": "Departamento",
+            "ranking_departamento": "Top", "fornecedor": "Fornecedor",
+            "pedido": "Pedido", "item_ordem": "Item", "codigo_produto": "Cód Produto",
+            "descricao_produto": "Descrição Produto", "saldo_cmv_item": "Saldo CMV Item",
+            "status_cobranca": "Status", "cobrancas": "Cobranças",
+            "motivo_item": "Motivo Item", "obs_motivo_item": "Obs Motivo Item",
+            "ultima_cobranca": "Última Cobrança",
+        })
+
+        edit_itens = st.data_editor(
+            exib_itens[[
+                "Selecionar", "doc_id", "item_chave", "Analista", "Departamento", "Top",
+                "Fornecedor", "Pedido", "Item", "Cód Produto", "Descrição Produto",
+                "Saldo CMV Item", "Status", "Cobranças", "Motivo Item", "Obs Motivo Item",
+                "Última Cobrança"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+            disabled=[
+                "doc_id", "item_chave", "Analista", "Departamento", "Top", "Fornecedor",
+                "Pedido", "Item", "Cód Produto", "Descrição Produto", "Saldo CMV Item",
+                "Status", "Cobranças", "Motivo Item", "Obs Motivo Item", "Última Cobrança"
+            ],
+            column_config={"doc_id": None, "item_chave": None},
+            key=f"ruptura_item_editor_{usuario_chave_item}_{st.session_state[key_editor_item_rev]}",
+            height=560,
+        )
+
+        chaves_selecionadas = edit_itens.loc[
+            edit_itens["Selecionar"] == True, ["doc_id", "item_chave"]
+        ].copy()
+        if chaves_selecionadas.empty:
+            st.info("Selecione um ou mais itens para informar ou atualizar o motivo.")
+            return
+
+        selecionados_idx = set(zip(
+            chaves_selecionadas["doc_id"].astype(str),
+            chaves_selecionadas["item_chave"].astype(str),
+        ))
+        df_itens_acao = df_itens[
+            df_itens.apply(lambda r: (str(r["doc_id"]), str(r["item_chave"])) in selecionados_idx, axis=1)
+        ].copy()
+
+        st.markdown("### Motivo dos itens selecionados")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Itens selecionados", len(df_itens_acao))
+        m2.metric("Pedidos envolvidos", int(df_itens_acao["pedido"].nunique()))
+        m3.metric(
+            "Saldo CMV selecionado",
+            formatar_moeda(pd.to_numeric(df_itens_acao["saldo_cmv_item"], errors="coerce").fillna(0).sum())
+        )
+
+        motivo_novo = st.selectbox(
+            "Motivo do item *", [""] + RETORNOS_RUPTURA,
+            key=f"rupt_motivo_item_novo_{usuario_chave_item}"
+        )
+        obs_motivo_novo = st.text_area(
+            "Observação do motivo *",
+            key=f"rupt_obs_motivo_item_novo_{usuario_chave_item}",
+            placeholder=(
+                "Obrigatório. Ex.: item cancelado por divergência de preço; "
+                "produto sem estoque; item faturado com previsão para 10/08."
+            )
+        )
+
+        if bool((pd.to_numeric(df_itens_acao["cobrancas"], errors="coerce").fillna(0) <= 0).any()):
+            st.warning("Há item selecionado em pedido sem cobrança. O motivo só pode ser salvo depois da 1ª cobrança.")
+
+        registros_item = df_itens_acao[[
+            "doc_id", "item_chave", "codigo_produto", "descricao_produto"
+        ]].to_dict("records")
+
+        if st.button(
+            "Salvar / atualizar motivo dos itens",
+            type="primary",
+            use_container_width=True,
+            key=f"rupt_salvar_motivo_item_{usuario_chave_item}",
+            disabled=(motivo_novo == "" or not obs_motivo_novo.strip())
+        ):
+            if registrar_retorno_item_ruptura_lote(
+                registros_item, usuario_logado, motivo_novo, obs_motivo_novo
+            ):
+                st.rerun()
+
+        return
+
+    # =========================
+    # VISUALIZAÇÃO POR PEDIDO
+    # =========================
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pedidos", int(dff["pedido"].nunique()))
     c2.metric(
@@ -6127,7 +6778,6 @@ def tela_carteira_ruptura(analista=None):
         )
     )
 
-    # Excel da mesma tabela filtrada, incluindo cobrança e retorno.
     excel_bytes = gerar_excel_ruptura_filtrada(dff)
     st.download_button(
         "Baixar carteira filtrada em Excel",
@@ -6145,8 +6795,7 @@ def tela_carteira_ruptura(analista=None):
         "obs_retorno_ultima_cobranca", "ultima_cobranca"
     ]].copy()
 
-    # Seleção em massa: marca/desmarca todos os pedidos que estão visíveis
-    # na tabela após a aplicação dos filtros.
+    # Seleção em massa: marca/desmarca todos os pedidos que estão visíveis.
     usuario_chave = analista or "admin"
     key_selecionar_todos = f"ruptura_selecionar_todos_{usuario_chave}"
     key_selecionar_todos_anterior = f"ruptura_selecionar_todos_anterior_{usuario_chave}"
@@ -6161,8 +6810,6 @@ def tela_carteira_ruptura(analista=None):
         help="Marca ou desmarca todos os pedidos que aparecem na tabela com os filtros atuais."
     )
 
-    # Quando o usuário altera o checkbox geral, recriamos somente o editor da tabela.
-    # Isso garante que todas as caixas individuais acompanhem a nova seleção.
     selecionar_todos_anterior = st.session_state.get(
         key_selecionar_todos_anterior,
         selecionar_todos
@@ -6212,7 +6859,7 @@ def tela_carteira_ruptura(analista=None):
     selecionados = edit.loc[edit["Selecionar"] == True, "doc_id"].tolist()
 
     if not selecionados:
-        st.info("Selecione um ou mais pedidos para registrar cobrança, retorno ou ação do comprador.")
+        st.info("Selecione um ou mais pedidos para registrar cobrança ou ação do comprador.")
         return
 
     df_acao = dff[dff["doc_id"].isin(selecionados)].copy()
@@ -6257,7 +6904,7 @@ def tela_carteira_ruptura(analista=None):
 
     df_pendente_retorno = df_acao[
         (pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0)
-        & (df_acao["retorno_ultima_cobranca"].astype(str).str.upper() == "PENDENTE")
+        & (df_acao["retorno_ultima_cobranca"].astype(str).str.upper().isin(["PENDENTE", "PARCIAL"]))
     ].copy()
 
     tem_retorno_pendente = not df_pendente_retorno.empty
@@ -6266,62 +6913,19 @@ def tela_carteira_ruptura(analista=None):
     )
 
     if tem_cobranca_para_retorno:
-        st.markdown("### Retorno da última cobrança")
-
+        st.markdown("### Motivos dos itens")
         if tem_retorno_pendente:
             st.warning(
-                "Para liberar a próxima cobrança, informe o retorno da última cobrança. "
-                "A observação é obrigatória em todos os casos."
+                "Há pedido com item sem motivo na cobrança atual. Para liberar a próxima cobrança, "
+                "mude para POR ITEM e preencha Motivo + Observação de todos os itens."
             )
         else:
-            st.success(
-                "Os pedidos selecionados já possuem retorno. Você pode atualizá-lo "
-                "sem registrar uma nova cobrança."
-            )
-
-        retorno_opcao = st.selectbox(
-            "Retorno *",
-            [""] + RETORNOS_RUPTURA,
-            key=f"rupt_retorno_opcao_{analista or 'admin'}"
-        )
-
-        obs_retorno = st.text_area(
-            "Observação do retorno *",
-            key=f"rupt_obs_retorno_{analista or 'admin'}",
-            placeholder=(
-                "Obrigatório. Ex.: fornecedor informou faturamento para 10/08; "
-                "pedido cancelado por divergência de preço; cobrado via e-mail e sem resposta."
-            )
-        )
-
-        ja_tem_retorno = bool(
-            (df_acao["retorno_ultima_cobranca"].astype(str).str.upper() != "PENDENTE").any()
-        )
-        texto_botao_retorno = (
-            "Atualizar retorno da última cobrança"
-            if ja_tem_retorno
-            else "Salvar retorno da última cobrança"
-        )
+            st.success("Todos os itens dos pedidos selecionados possuem motivo na cobrança atual.")
 
         st.caption(
-            "Atualizar o retorno mantém o mesmo número de cobrança e preserva o histórico anterior."
+            "A cobrança continua sendo por pedido. O motivo/retorno é informado e atualizado na "
+            "visualização POR ITEM, sem aumentar o número de cobranças."
         )
-
-        if st.button(
-            texto_botao_retorno,
-            key=f"rupt_salvar_retorno_{analista or 'admin'}",
-            use_container_width=True,
-            disabled=(retorno_opcao == "" or not obs_retorno.strip())
-        ):
-            ids_retorno = df_acao[
-                pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0) > 0
-            ]["doc_id"].dropna().tolist()
-
-            if registrar_retorno_ruptura_lote(
-                ids_retorno, usuario_logado, retorno_opcao, obs_retorno
-            ):
-                st.success("Retorno salvo/atualizado sem criar nova cobrança.")
-                st.rerun()
 
     maior_cobranca = int(
         pd.to_numeric(df_acao["cobrancas"], errors="coerce").fillna(0).max()
