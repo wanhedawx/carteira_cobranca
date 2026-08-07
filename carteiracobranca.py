@@ -75,7 +75,6 @@ RETORNOS_RUPTURA = [
     "DIVERGÊNCIA COMERCIAL",
     "CANCELADO",
     "REPROGRAMADO",
-    "OUTROS",
 ]
 
 COLUNAS_MOEDA = [
@@ -5969,7 +5968,6 @@ def tela_upload_ruptura():
 
 def tela_carteira_ruptura(analista=None):
     st.header("Carteira Ruptura" if not analista else "Minha Carteira Ruptura")
-    st.caption("TOP 5 fornecedores por departamento pela Contagem de Cod_Prod, igual à Tabela Dinâmica. A data do pedido não interfere na seleção.")
 
     df = buscar_carteira_ruptura(analista)
     if df.empty:
