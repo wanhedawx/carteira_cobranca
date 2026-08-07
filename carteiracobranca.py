@@ -6594,17 +6594,9 @@ def tela_carteira_ruptura(analista=None):
             dff["retorno_ultima_cobranca"].astype(str).str.strip() == retorno_filtro
         ]
 
-    # A mesma carteira pode ser analisada por PEDIDO ou aberta por ITEM.
-    visualizacao = st.radio(
-        "Visualização",
-        ["POR PEDIDO", "POR ITEM"],
-        horizontal=True,
-        key=f"rupt_visualizacao_{analista or 'admin'}",
-        help=(
-            "POR ITEM abre cada pedido produto a produto. A cobrança continua no pedido, "
-            "mas o motivo e a observação são registrados individualmente por item."
-        )
-    )
+    # A Carteira Ruptura é exibida somente em nível de ITEM.
+    # Cobrança continua no nível do PEDIDO, escolhido separadamente na área de ações.
+    visualizacao = "POR ITEM"
 
     if visualizacao == "POR ITEM":
         df_itens = montar_carteira_ruptura_por_item(
@@ -6736,12 +6728,14 @@ def tela_carteira_ruptura(analista=None):
             edit_itens["Selecionar"] == True, ["doc_id", "item_chave"]
         ].copy()
 
+        # =========================================================
+        # RETORNO / MOTIVO É SEMPRE POR ITEM
+        # =========================================================
         if chaves_selecionadas.empty:
             df_itens_acao = pd.DataFrame()
-            df_acao_pedido = pd.DataFrame()
             st.info(
-                "Selecione um ou mais itens. O retorno é atualizado por item e as ações de cobrança "
-                "são aplicadas ao(s) pedido(s) desses itens."
+                "Selecione um ou mais itens para preencher ou atualizar o Motivo/Retorno. "
+                "A cobrança do pedido é feita separadamente logo abaixo."
             )
         else:
             selecionados_idx = set(zip(
@@ -6755,16 +6749,6 @@ def tela_carteira_ruptura(analista=None):
                 )
             ].copy()
 
-            ids_pedidos_item = list(dict.fromkeys(
-                df_itens_acao["doc_id"].dropna().astype(str).tolist()
-            ))
-            df_acao_pedido = dff[
-                dff["doc_id"].astype(str).isin(ids_pedidos_item)
-            ].drop_duplicates(subset=["doc_id"]).copy()
-
-            # =====================================================
-            # RETORNO / MOTIVO POR ITEM
-            # =====================================================
             st.markdown("### Atualizar retorno / motivo dos itens")
             m1, m2, m3 = st.columns(3)
             m1.metric("Itens selecionados", len(df_itens_acao))
@@ -6798,7 +6782,7 @@ def tela_carteira_ruptura(analista=None):
             if tem_item_sem_cobranca:
                 st.warning(
                     "Há item selecionado em pedido sem cobrança. Registre primeiro a 1ª cobrança "
-                    "na seção abaixo e depois informe o retorno do item."
+                    "do pedido na seção abaixo e depois informe o retorno do item."
                 )
 
             registros_item = df_itens_acao[[
@@ -6817,16 +6801,37 @@ def tela_carteira_ruptura(analista=None):
                 ):
                     st.rerun()
 
-            # =====================================================
-            # COBRANÇA CONTINUA POR PEDIDO
-            # =====================================================
-            st.divider()
-            st.markdown("### Ações da cobrança do(s) pedido(s)")
-            st.caption(
-                "Os itens selecionados definem quais pedidos serão afetados. "
-                "Registrar/excluir cobrança continua sendo sempre no nível do PEDIDO."
-            )
+        # =========================================================
+        # COBRANÇA É POR PEDIDO, ESCOLHIDO SEPARADAMENTE
+        # =========================================================
+        st.divider()
+        st.markdown("### Cobrança do pedido")
+        st.caption(
+            "Escolha o pedido abaixo. Registrar cobrança, excluir cobrança e acionar comprador "
+            "afetam o pedido inteiro. O Motivo/Retorno continua sendo preenchido item por item acima."
+        )
 
+        df_pedidos_cobranca = dff.drop_duplicates(subset=["doc_id"]).copy()
+        df_pedidos_cobranca["_opcao_cobranca"] = (
+            df_pedidos_cobranca["pedido"].astype(str)
+            + " | "
+            + df_pedidos_cobranca["fornecedor"].astype(str)
+            + " | "
+            + df_pedidos_cobranca["departamento"].astype(str)
+        )
+
+        opcoes_pedido_cobranca = df_pedidos_cobranca["_opcao_cobranca"].tolist()
+        pedido_cobranca_opcao = st.selectbox(
+            "Selecione o pedido para cobrança",
+            opcoes_pedido_cobranca,
+            key=f"rupt_pedido_cobranca_itemview_{analista or 'admin'}"
+        )
+
+        df_acao_pedido = df_pedidos_cobranca[
+            df_pedidos_cobranca["_opcao_cobranca"] == pedido_cobranca_opcao
+        ].head(1).copy()
+
+        if not df_acao_pedido.empty:
             resumo_pedido_item = df_acao_pedido[[
                 "analista", "departamento", "fornecedor", "pedido",
                 "status_cobranca", "cobrancas", "obs_cobranca",
@@ -6840,25 +6845,24 @@ def tela_carteira_ruptura(analista=None):
                 "status_cobranca": "Status",
                 "cobrancas": "Cobranças",
                 "obs_cobranca": "Obs Cobrança",
-                "retorno_ultima_cobranca": "Retorno dos Itens",
-                "obs_retorno_ultima_cobranca": "Situação dos Itens",
+                "retorno_ultima_cobranca": "Situação dos Itens",
+                "obs_retorno_ultima_cobranca": "Preenchimento dos Itens",
                 "saldo_cmv": "Saldo CMV",
             })
             st.dataframe(
                 formatar_df_moeda(resumo_pedido_item),
                 use_container_width=True,
                 hide_index=True,
-                height=220
+                height=120
             )
 
-            cp1, cp2 = st.columns(2)
-            cp1.metric("Pedidos selecionados", int(df_acao_pedido["doc_id"].nunique()))
-            cp2.metric(
-                "Saldo CMV dos pedidos",
-                formatar_moeda(
-                    pd.to_numeric(df_acao_pedido["saldo_cmv"], errors="coerce")
-                    .fillna(0).sum()
-                )
+            linha_pedido_cobranca = df_acao_pedido.iloc[0]
+            doc_id_pedido_cobranca = str(linha_pedido_cobranca["doc_id"])
+            qtd_cobrancas_atual = int(
+                pd.to_numeric(
+                    pd.Series([linha_pedido_cobranca.get("cobrancas", 0)]),
+                    errors="coerce"
+                ).fillna(0).iloc[0]
             )
 
             obs_cobranca_itemview = st.text_area(
@@ -6869,38 +6873,32 @@ def tela_carteira_ruptura(analista=None):
                 )
             )
 
-            df_pendente_retorno_itemview = df_acao_pedido[
-                (pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce").fillna(0) > 0)
-                & (df_acao_pedido["retorno_ultima_cobranca"].astype(str).str.upper()
-                   .isin(["PENDENTE", "PARCIAL"]))
-            ].copy()
-            tem_retorno_pendente_itemview = not df_pendente_retorno_itemview.empty
+            todos_itens_com_motivo = pedido_tem_todos_itens_com_motivo(
+                linha_pedido_cobranca,
+                retornos_itens,
+                retornos
+            )
+            tem_retorno_pendente_itemview = (
+                qtd_cobrancas_atual > 0 and not todos_itens_com_motivo
+            )
 
             if tem_retorno_pendente_itemview:
                 st.warning(
-                    "Há pedido com item sem retorno/motivo na cobrança atual. "
-                    "Preencha Motivo + Observação dos itens antes de registrar a próxima cobrança."
+                    "Este pedido ainda possui item sem Motivo + Observação na cobrança atual. "
+                    "Preencha os itens antes de registrar a próxima cobrança."
                 )
-            elif bool(
-                (pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce").fillna(0) > 0).any()
-            ):
-                st.success("Todos os itens dos pedidos selecionados possuem retorno na cobrança atual.")
-
-            maior_cobranca_itemview = int(
-                pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce")
-                .fillna(0).max()
-            ) if not df_acao_pedido.empty else 0
+            elif qtd_cobrancas_atual > 0:
+                st.success("Todos os itens deste pedido possuem retorno na cobrança atual.")
 
             cobranca_excluir_itemview = None
-            if maior_cobranca_itemview > 0:
+            if qtd_cobrancas_atual > 0:
                 opcoes_excluir_itemview = [
                     (1, "1ª cobrança"),
                     (2, "2ª cobrança"),
                     (3, "3ª cobrança"),
                 ]
                 opcoes_excluir_itemview = [
-                    x for x in opcoes_excluir_itemview
-                    if x[0] <= maior_cobranca_itemview
+                    x for x in opcoes_excluir_itemview if x[0] <= qtd_cobrancas_atual
                 ]
                 mapa_excluir_itemview = {
                     label: numero for numero, label in opcoes_excluir_itemview
@@ -6916,22 +6914,13 @@ def tela_carteira_ruptura(analista=None):
                     f"{max(cobranca_excluir_itemview - 1, 0)} cobrança(s)."
                 )
 
-            tem_menos_3_itemview = bool(
-                (pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce")
-                 .fillna(0) < 3).any()
+            status_pedido_cobranca = str(
+                linha_pedido_cobranca.get("status_cobranca", "") or ""
             )
-            tem_3_itemview = bool(
-                (pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce")
-                 .fillna(0) >= 3).any()
-            )
-            tem_acionar_itemview = bool(
-                (df_acao_pedido["status_cobranca"] == STATUS_ACIONAR_COMPRADOR).any()
-            )
-            tem_excluir_itemview = maior_cobranca_itemview > 0
-
-            ids_pedidos_selecionados_itemview = list(dict.fromkeys(
-                df_acao_pedido["doc_id"].dropna().astype(str).tolist()
-            ))
+            tem_menos_3_itemview = qtd_cobrancas_atual < 3
+            tem_3_itemview = qtd_cobrancas_atual >= 3
+            tem_acionar_itemview = status_pedido_cobranca == STATUS_ACIONAR_COMPRADOR
+            tem_excluir_itemview = qtd_cobrancas_atual > 0
 
             a1i, a2i, a3i, a4i = st.columns(4)
 
@@ -6942,13 +6931,8 @@ def tela_carteira_ruptura(analista=None):
                     key=f"rupt_cobrar_itemview_{analista or 'admin'}",
                     disabled=(not tem_menos_3_itemview or tem_retorno_pendente_itemview)
                 ):
-                    ids_cobranca_itemview = df_acao_pedido[
-                        pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce")
-                        .fillna(0) < 3
-                    ]["doc_id"].dropna().astype(str).tolist()
-
                     if registrar_cobranca_ruptura(
-                        ids_cobranca_itemview,
+                        [doc_id_pedido_cobranca],
                         usuario_logado,
                         obs_cobranca_itemview
                     ):
@@ -6961,17 +6945,12 @@ def tela_carteira_ruptura(analista=None):
                     key=f"rupt_acionar_itemview_{analista or 'admin'}",
                     disabled=(not tem_3_itemview or tem_retorno_pendente_itemview)
                 ):
-                    ids_acionar_itemview = df_acao_pedido[
-                        pd.to_numeric(df_acao_pedido["cobrancas"], errors="coerce")
-                        .fillna(0) >= 3
-                    ]["doc_id"].dropna().astype(str).tolist()
-
                     if sinalizar_comprador_ruptura_lote(
-                        ids_acionar_itemview,
+                        [doc_id_pedido_cobranca],
                         usuario_logado,
                         obs_cobranca_itemview
                     ):
-                        st.success("Pedidos sinalizados para acionar comprador.")
+                        st.success("Pedido sinalizado para acionar comprador.")
                         st.rerun()
 
             with a3i:
@@ -6981,12 +6960,8 @@ def tela_carteira_ruptura(analista=None):
                     key=f"rupt_comprador_acionado_itemview_{analista or 'admin'}",
                     disabled=not tem_acionar_itemview
                 ):
-                    ids_acionado_itemview = df_acao_pedido[
-                        df_acao_pedido["status_cobranca"] == STATUS_ACIONAR_COMPRADOR
-                    ]["doc_id"].dropna().astype(str).tolist()
-
                     if marcar_comprador_acionado_ruptura_lote(
-                        ids_acionado_itemview,
+                        [doc_id_pedido_cobranca],
                         usuario_logado,
                         obs_cobranca_itemview
                     ):
@@ -7001,7 +6976,7 @@ def tela_carteira_ruptura(analista=None):
                     disabled=(not tem_excluir_itemview or cobranca_excluir_itemview is None)
                 ):
                     if excluir_cobranca_ruptura_lote(
-                        ids_pedidos_selecionados_itemview,
+                        [doc_id_pedido_cobranca],
                         usuario_logado,
                         obs_cobranca_itemview,
                         cobranca_excluir_itemview
@@ -7016,27 +6991,11 @@ def tela_carteira_ruptura(analista=None):
         st.markdown("### Histórico do pedido")
 
         if not df_acao_pedido.empty:
-            df_hist_itemview = df_acao_pedido.copy()
-        else:
-            df_hist_itemview = dff.drop_duplicates(subset=["doc_id"]).copy()
-
-        if not df_hist_itemview.empty:
-            df_hist_itemview["_opcao_hist_item"] = (
-                df_hist_itemview["pedido"].astype(str)
-                + " | "
-                + df_hist_itemview["fornecedor"].astype(str)
+            linha_hist_item = df_acao_pedido.iloc[0]
+            st.caption(
+                f"Histórico do pedido selecionado: {linha_hist_item.get('pedido', '')} "
+                f"| {linha_hist_item.get('fornecedor', '')}"
             )
-            opcoes_hist_item = df_hist_itemview["_opcao_hist_item"].drop_duplicates().tolist()
-
-            opcao_hist_item = st.selectbox(
-                "Selecione o pedido para ver o histórico",
-                opcoes_hist_item,
-                key=f"rupt_hist_sel_itemview_{analista or 'admin'}"
-            )
-
-            linha_hist_item = df_hist_itemview[
-                df_hist_itemview["_opcao_hist_item"] == opcao_hist_item
-            ].iloc[0]
 
             if st.button(
                 "Ver histórico do pedido",
